@@ -1,0 +1,25 @@
+## Build outputs
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.rsuser
+
+## NuGet
+packages/
+*.nupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Rhino
+*.rhp.bak
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Secrets — never commit
+*.env
+appsettings.Local.json

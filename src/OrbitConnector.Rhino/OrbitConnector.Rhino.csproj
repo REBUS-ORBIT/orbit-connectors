@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>OrbitConnector.Rhino</AssemblyName>
+    <RootNamespace>OrbitConnector.Rhino</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>REBUS Industries</Authors>
+    <Description>ORBIT Connector for Rhino 8</Description>
+    <OutputType>Library</OutputType>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <!-- Rename output to .rhp after build -->
+  <Target Name="RenameToRhp" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
+          DestinationFiles="$(OutputPath)$(AssemblyName).rhp"
+          OverwriteReadOnlyFiles="true" />
+  </Target>
+
+  <!--
+    SDK reference strategy:
+      OrbitSdkLocal=true  => local project references (development, sibling clone)
+      OrbitSdkLocal=false => NuGet packages (CI, published releases)
+    Set via Directory.Build.props or ORBIT_SDK_LOCAL=1 env var.
+  -->
+  <ItemGroup Condition="'$(OrbitSdkLocal)' == 'true'">
+    <ProjectReference Include="$(OrbitSdkPath)\Orbit.Objects\Orbit.Objects.csproj" />
+    <ProjectReference Include="$(OrbitSdkPath)\Orbit.Sdk\Orbit.Sdk.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(OrbitSdkLocal)' != 'true'">
+    <PackageReference Include="Orbit.Objects" Version="1.0.*" />
+    <PackageReference Include="Orbit.Sdk" Version="1.0.*" />
+  </ItemGroup>
+
+  <!--
+    Rhino + Eto references.
+    Strategy:
+      1. If Rhino 8 is installed locally, use the DLLs directly (Private=false so they are
+         not bundled in the output - Rhino provides them at runtime).
+      2. If Rhino is not installed (CI without Rhino, Linux checks), fall back to the NuGet
+         reference assemblies. ExcludeAssets=runtime means compile-time only, not copied.
+  -->
+  <ItemGroup Condition="Exists('$(ProgramFiles)\Rhino 8\System\RhinoCommon.dll')">
+    <Reference Include="RhinoCommon">
+      <HintPath>$(ProgramFiles)\Rhino 8\System\RhinoCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Eto">
+      <HintPath>$(ProgramFiles)\Rhino 8\System\Eto.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Rhino.UI">
+      <HintPath>$(ProgramFiles)\Rhino 8\System\Rhino.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- NuGet fallback - compile-time stubs only, not bundled at runtime -->
+  <ItemGroup Condition="!Exists('$(ProgramFiles)\Rhino 8\System\RhinoCommon.dll')">
+    <PackageReference Include="RhinoCommon" Version="8.*" ExcludeAssets="runtime" />
+    <PackageReference Include="Eto.Forms" Version="2.*" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\**\*" />
+  </ItemGroup>
+
+</Project>

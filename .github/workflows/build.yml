@@ -1,0 +1,46 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    runs-on: windows-latest     # Required for net8.0-windows (Rhino connector)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore ORBIT-Connectors.sln
+
+      - name: Build
+        run: dotnet build ORBIT-Connectors.sln --configuration Release --no-restore
+
+      - name: Run unit tests
+        run: dotnet test ORBIT-Connectors.sln --configuration Release --no-build --verbosity normal
+
+      - name: Package .rhp + installer (on release tag only)
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          Write-Host "Building installer for version $version"
+          # TODO: run Build-Installer.ps1 when Inno Setup is available on runner
+          # .\src\OrbitConnector.Rhino\installer\Build-Installer.ps1 -Version $version
+
+      - name: Upload .rhp artefact (on release tag)
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbitConnector-Rhino-${{ github.ref_name }}
+          path: src/OrbitConnector.Rhino/bin/Release/net8.0-windows/OrbitConnector.Rhino.rhp
