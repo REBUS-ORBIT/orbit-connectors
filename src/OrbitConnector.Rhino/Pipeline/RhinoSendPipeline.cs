@@ -27,7 +27,9 @@ public class RhinoSendPipeline
         {
             new RhinoMeshConverter(),
             new RhinoBrepConverter(),
-            // TODO: add curve, point, instance, text converters as built
+            new RhinoPointConverter(),
+            new RhinoInstanceConverter(),
+            new RhinoCurveConverter(),
         };
     }
 
@@ -52,8 +54,14 @@ public class RhinoSendPipeline
 
         progress?.Report(("Converting geometry…", 10));
 
+        // Reset per-send state
+        RhinoColorConverter.Reset();
+
         // 2. CONVERT — build layer tree
         var root = BuildObjectTree(rhinoObjects, doc, context, card);
+
+        // 2b. Collect groups after all objects are converted
+        RhinoGroupConverter.CollectGroups(doc, context, rhinoObjects);
 
         // 3. SERIALISE
         progress?.Report(("Serialising…", 40));
@@ -135,6 +143,9 @@ public class RhinoSendPipeline
                 if (converted == null) continue;
                 converted.ApplicationId = obj.Id.ToString();
                 layerCollection.Elements.Add(converted);
+
+                RhinoMaterialConverter.RegisterMaterial(obj, obj.Id.ToString(), context);
+                RhinoColorConverter.RegisterColor(obj, obj.Id.ToString(), context);
             }
 
             root.Elements.Add(layerCollection);
