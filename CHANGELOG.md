@@ -11,6 +11,35 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.3 — Auto-register Rhino plug-in on install
+
+- **Inno Setup installer now writes Rhino's plug-in discovery keys** under
+  `HKCU\Software\McNeel\Rhinoceros\8.0\Plug-ins\{<plugin-guid>}` (with the
+  `Name` and `FileName` values Rhino reads on startup), so the connector
+  loads automatically on the next Rhino launch. No more manual drag-drop
+  of the `.rhp` file or running the "Install in Rhino 8" Start Menu
+  shortcut after every install.
+- **"Install in Rhino 8" Start Menu shortcut retained as a manual
+  fallback** — useful when Rhino is running during install or the user
+  wants to re-register against a different Rhino version. Comment text
+  updated to reflect that it's no longer the primary registration path.
+- **Stable plug-in identity GUID added to the Rhino assembly**
+  (`Properties/AssemblyInfo.cs` — `[assembly: Guid("4F3A2B1C-...")]`).
+  Rhino reads this attribute from the compiled `.rhp` and uses it as the
+  plug-in's persistent ID. The Inno Setup script's `PluginGuid` define
+  matches it; both must move together if ever changed (which they
+  shouldn't be).
+- **Uninstall cleanly removes the registry entry** via Inno Setup's
+  `uninsdeletekey` flag.
+
+### Upgrading from v0.1.2
+
+The cleanest path is **uninstall v0.1.2 first** (Add/Remove Programs ->
+"ORBIT Connector for Rhino" -> Uninstall) and then run the v0.1.3 `.exe`.
+An in-place upgrade also works — v0.1.3's installer overwrites the
+registry key on top of v0.1.2's missing one — but the uninstall+install
+path leaves the cleanest set of files on disk.
+
 ## v0.1.2 — Lockstep versioning + Rhino UI polish
 
 - **Lockstep versioning policy** — every connector now ships with the same

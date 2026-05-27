@@ -32,6 +32,13 @@
 #define AppPublisher  "REBUS-ORBIT"
 #define AppId         "{{D7E4A9C2-3F8B-4A11-9E07-1B5C6D8E2F40}"
 
+; PluginGuid MUST match the [assembly: Guid(...)] attribute on the Rhino
+; plug-in assembly (see src/OrbitConnector.Rhino/Properties/AssemblyInfo.cs).
+; Rhino uses this GUID as the plug-in's persistent identity under
+;   HKCU\Software\McNeel\Rhinoceros\8.0\Plug-ins\{<PluginGuid>}.
+; Update both together; never regenerate independently.
+#define PluginGuid    "4F3A2B1C-8E5D-4A9F-B6C2-1D7E3F4A5B6C"
+
 #ifndef ConnectorVersion
   #define ConnectorVersion "0.0.0"
 #endif
@@ -94,15 +101,44 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; \
         Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Registry]
+; -----------------------------------------------------------------------------
+; Rhino 8 per-user plug-in registration.
+;
+; Writes the discovery keys Rhino reads on startup, so the plug-in loads
+; automatically on the next Rhino launch without the user needing to
+; drag-drop the .rhp first or run the "Install in Rhino 8" Start Menu
+; shortcut. Per-user (HKCU) matches PrivilegesRequired=lowest above.
+;
+; In Inno Setup, a literal `{` inside a Subkey: string must be escaped as
+; `{{`. So the {<PluginGuid>} braces become `{{` + PluginGuid + `}` below.
+;
+; Flags: uninsdeletekey on the first entry so uninstall removes the GUID
+; subkey (and every value under it) cleanly. The second entry shares the
+; same key, no separate flag needed.
+;
+; On upgrade (e.g. 0.1.2 -> 0.1.3), Inno Setup overwrites the FileName
+; value with the current {app} path -- so the registry always points at
+; the version that's actually installed.
+; -----------------------------------------------------------------------------
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{{{#PluginGuid}}"; \
+  ValueType: string; ValueName: "Name"; ValueData: "{#AppName}"; \
+  Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{{{#PluginGuid}}"; \
+  ValueType: string; ValueName: "FileName"; ValueData: "{app}\OrbitConnector.Rhino.rhp"
+
 [Icons]
-; Lightweight Start Menu entry pointing at the .rhp file. Double-clicking it
-; in Explorer hands off to Rhino, which is the canonical "install plug-in" UX.
+; Manual fallback Start Menu entry pointing at the .rhp file. The installer
+; already registers the plug-in automatically (see [Registry] above) so this
+; shortcut is rarely needed -- it's kept for the edge cases where Rhino was
+; running during install, the user wants to register against a different
+; Rhino version, or some other manual reset is required.
 Name: "{group}\Install in Rhino 8"; Filename: "{app}\OrbitConnector.Rhino.rhp"; \
-  Comment: "Launches Rhino to register the ORBIT connector"
+  Comment: "Manually re-register the connector with Rhino (usually not needed -- installer registers automatically)"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 [Messages]
-FinishedLabel=ORBIT Connector for Rhino has been installed.%n%nThe plug-in will load automatically the next time you start Rhino 8. If Rhino is already running you will need to restart it.
+FinishedLabel=ORBIT Connector for Rhino has been installed and registered with Rhino 8.%n%nThe plug-in will load automatically the next time you start Rhino. If Rhino is currently running, restart it to load the connector.
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
