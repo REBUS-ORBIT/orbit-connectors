@@ -173,11 +173,40 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; \
 ; standard Rhino 8 install. Both forms parse as a valid System.Guid, but
 ; no-braces is the form Rhino's reader emits and matches.
 ;
+; -----------------------------------------------------------------------------
+; v0.1.7 fix -- the smoking gun behind the "initialization failed" dialog.
+; -----------------------------------------------------------------------------
+; v0.1.3 .. v0.1.6 wrote only Name + FileName here. That's enough for Rhino
+; to LIST the plug-in in PluginManager but NOT enough for Rhino to actually
+; load it at startup. Without LoadMode / Type / IsDotNETPlugIn / Description,
+; Rhino's plug-in scanner skipped the entry on cold-start and left the user
+; staring at the "Unable to load OrbitConnector.Rhino.rhp plug-in:
+; initialization failed." dialog. (Reproduced live by bisecting against the
+; official v0.1.6 .rhp on a clean machine: with only Name+FileName Rhino
+; never invokes the plug-in's static cctor; once LoadMode + IsDotNETPlugIn
+; are present Rhino loads and Panels.RegisterPanel succeeds first try.)
+;
+; The fix is to ship the full set Rhino normally writes back after a first
+; successful load:
+;
+;   LoadMode        = 1   -> PlugInLoadTime.LoadAtStartup
+;   Type            = 16  -> RhinoPlugInType.General
+;   IsDotNETPlugIn  = 1
+;   Description     = <human description>
+;   AddToHelpMenu   = 0
+;   EnglishName     = OrbitConnector.Rhino  (assembly name, used by Rhino)
+;
+; Plus the FileName the installer already wrote. Anything Rhino infers from
+; the plug-in itself (commands, panels, exact display Name) gets layered on
+; top of these defaults on first successful load -- we deliberately do not
+; pre-write CommandList / Panels subkeys.
+; -----------------------------------------------------------------------------
+;
 ; Flags: uninsdeletekey on the first entry so uninstall removes the GUID
-; subkey (and every value under it) cleanly. The second entry shares the
+; subkey (and every value under it) cleanly. The other entries share the
 ; same key, no separate flag needed.
 ;
-; On upgrade (e.g. 0.1.3 -> 0.1.4), Inno Setup overwrites the FileName
+; On upgrade (e.g. 0.1.6 -> 0.1.7), Inno Setup overwrites the FileName
 ; value with the current {app} path -- so the registry always points at
 ; the version that's actually installed.
 ; -----------------------------------------------------------------------------
@@ -186,6 +215,40 @@ Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
   Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
   ValueType: string; ValueName: "FileName"; ValueData: "{app}\OrbitConnector.Rhino.rhp"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: dword; ValueName: "LoadMode"; ValueData: "1"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: dword; ValueName: "Type"; ValueData: "16"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: dword; ValueName: "IsDotNETPlugIn"; ValueData: "1"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: dword; ValueName: "AddToHelpMenu"; ValueData: "0"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: string; ValueName: "EnglishName"; ValueData: "OrbitConnector.Rhino"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: string; ValueName: "Description"; ValueData: "{#AppName}"
+
+; -----------------------------------------------------------------------------
+; v0.1.7 -- also clear stale state from prior broken installs so the upgrade
+; actually re-attempts loading.
+;
+; - Plug-ins\<guid>\PlugIn\FileName -- written by Rhino on first successful
+;   load and used in preference to the parent FileName value. If a previous
+;   broken install left this pointing at a path Rhino can't find, scan halts
+;   before the plug-in's own AssemblyLoad is even attempted. Re-pointing it
+;   at the current {app}\OrbitConnector.Rhino.rhp forces Rhino to retry
+;   against the freshly-installed payload.
+; - Global Options\Plug-ins\<guid>\LoadProtection -- not actually load-
+;   gating in Rhino 8 on the tested machine (observed values 1..5 all still
+;   load) but cleaning it here is defensive: any future version of Rhino
+;   that gates on a 'previous crash' marker stored here gets a clean slate
+;   on every upgrade.
+; -----------------------------------------------------------------------------
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}\PlugIn"; \
+  ValueType: string; ValueName: "FileName"; ValueData: "{app}\OrbitConnector.Rhino.rhp"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Global Options\Plug-ins\{#PluginGuid}"; \
+  ValueType: none; ValueName: "LoadProtection"; \
+  Flags: deletevalue
 
 [Icons]
 ; Manual fallback Start Menu entry pointing at the .rhp file. The installer

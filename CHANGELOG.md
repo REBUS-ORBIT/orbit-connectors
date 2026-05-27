@@ -11,6 +11,149 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.7 — Rhino plug-in actually loads now (installer registry + System.Drawing metadata)
+
+**v0.1.6 still threw "initialization failed" on Rhino startup despite the
+NuGet transitive DLL bundling. This release fixes the two distinct
+root causes that survived that hotfix and adds a permanent diagnostic
+log so the next regression isn't a guessing game.**
+
+### Root cause #1 — installer wrote an incomplete plug-in registry entry
+
+`installers/rhino/inno/OrbitConnector.Rhino.iss` v0.1.3 .. v0.1.6 wrote
+only `Name` and `FileName` under
+`HKCU\Software\McNeel\Rhinoceros\8.0\Plug-ins\<guid>\`. That's enough
+for Rhino's PluginManager to *list* the plug-in but **not** enough for
+Rhino to actually load it at startup. Rhino's plug-in scanner needs
+`LoadMode`, `Type`, `IsDotNETPlugIn`, `Description`, and `EnglishName`
+to decide a particular entry is a load candidate.
+
+Reproduced by bisecting against the official v0.1.6 `.rhp` on a clean
+machine: with only `Name`+`FileName` the static cctor on
+`OrbitConnectorPlugin` never fires, no `OnLoad` runs, no error dialog —
+but the user sees nothing happen either, which Rhino sometimes reports
+back as the generic "initialization failed" dialog if the same GUID
+had previously failed to load for any reason (Rhino caches the failure
+in `HKCU\...\Global Options\Plug-ins\<guid>\LoadProtection`).
+
+**Fix:** the installer now writes the full set of values Rhino would
+normally back-populate after a successful first load. Specifically:
+
+```
+LoadMode        = 1   (PlugInLoadTime.LoadAtStartup)
+Type            = 16  (RhinoPlugInType.General)
+IsDotNETPlugIn  = 1
+AddToHelpMenu   = 0
+EnglishName     = OrbitConnector.Rhino
+Description     = ORBIT Connector for Rhino
+```
+
+Plus the existing `Name` and `FileName`. Rhino layers
+plug-in-discovered values (CommandList, Panels, exact display Name) on
+top of these on first successful load.
+
+The installer also defensively clears
+`Global Options\Plug-ins\<guid>\LoadProtection` on every install so
+any stale "previously failed, never load again" marker from a prior
+broken install is wiped, and re-points `Plug-ins\<guid>\PlugIn\FileName`
+at the freshly-installed payload so Rhino doesn't keep hitting a stale
+path cached from a previous broken install.
+
+### Root cause #2 — bundled `System.Drawing.Common.dll` collided with the shared framework copy
+
+`OrbitConnector.Rhino.csproj` in v0.1.6 referenced
+`System.Drawing.Common` as a plain `<PackageReference>`, and the v0.1.6
+`<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>`
+hotfix happily copied `System.Drawing.Common.dll 8.0.0.0` into the
+installer payload. On disk, that DLL sat right next to the `.rhp`.
+
+Rhino's plug-in custom `AssemblyLoadContext` resolves siblings first.
+That gave the .rhp's load a `System.Drawing.Common` identity distinct
+from the copy `Microsoft.WindowsDesktop.App` had already loaded into
+the default ALC during Rhino startup (the one RhinoCommon itself is
+linked against). The legacy `System.Drawing` facade's
+`[TypeForwardedFrom]` attributes are stamped `Version=0.0.0.0`, and
+the custom ALC's binder couldn't unify that synthetic version across
+the now-distinct sibling and default-ALC identities. The result was a
+`FileNotFoundException` for
+`'System.Drawing.Common, Version=0.0.0.0, PublicKeyToken=cc7b13ffcd2ddd51'`
+thrown **during type-metadata scan**, before any of our code (cctor,
+ModuleInitializer, OnLoad) had a chance to run. Rhino caught the
+TypeLoadException, swallowed the inner detail, and shipped the
+generic "initialization failed" dialog.
+
+(Verified by reflection-loading the v0.1.6 `.rhp` in an isolated
+`net8.0-windows` `AssemblyLoadContext` mirroring Rhino's: the inner
+`FileNotFoundException` for the 0.0.0.0 `System.Drawing.Common`
+request surfaces immediately.)
+
+**Fix:**
+- `OrbitConnector.Rhino.csproj` keeps `System.Drawing.Common` as a
+  `PackageReference` but with `ExcludeAssets="runtime"` and
+  `PrivateAssets="all"`. The package is only needed at **compile
+  time** because `Rhino.UI.Panels.RegisterPanel`'s signature takes a
+  `System.Drawing.Icon`. At runtime, Rhino's load context delegates
+  to the default ALC, which already has
+  `System.Drawing.Common 8.0.0.0` loaded from
+  `Microsoft.WindowsDesktop.App` — that's the only copy Rhino sees,
+  and the 0.0.0.0 forwarder is satisfied from it.
+- `Properties/Resources.cs` no longer references `System.Drawing.*`
+  in its public surface. The future-icon placeholder is now
+  `byte[]? OrbitIcon16Bytes`; consumers can turn it into the
+  platform-appropriate type via `Eto.Drawing.Bitmap` (or whatever
+  the call site needs). Eto.Forms doesn't need `System.Drawing`
+  anywhere, and removing the metadata reference is a second-belt
+  defence even if Rhino's ALC ever changes how it resolves siblings.
+
+### Diagnostic load log (permanent)
+
+So the next regression doesn't take three releases to find: every
+plug-in load now appends to
+`%LOCALAPPDATA%\OrbitConnector\load.log`. Lines tag the cctor, the
+plug-in ctor, `OnLoad` entry/exit, panel registration, document
+event wiring, and any caught exception (including full inner-chain
+and stack). All I/O is wrapped in `try/catch` — a logging failure
+will never break plug-in load. If a user reports another failure,
+the file is one path to copy + paste.
+
+A healthy load looks like:
+
+```
+[hh:mm:ss.fff] cctor v0.1.7 runtime=.NET 8.0.14
+[hh:mm:ss.fff] ctor done
+[hh:mm:ss.fff] OnLoad enter
+[hh:mm:ss.fff] registering OrbitEtoPanel
+[hh:mm:ss.fff] panel registered
+[hh:mm:ss.fff] doc events wired
+[hh:mm:ss.fff] OnLoad ok
+```
+
+(A pre-cctor `TypeLoadException` like the v0.1.6 one will NOT show
+up here -- the cctor never gets to run -- but any failure inside
+`OnLoad` itself or any exception that surfaces post-cctor will be
+logged with full inner-chain + stack.)
+
+### Local verification
+
+Built the v0.1.7 payload on Windows 11 / Rhino 8.30 with Inno Setup 6,
+uninstalled v0.1.6, wiped every HKCU plug-in registry entry, installed
+the v0.1.7 `.exe`, and started Rhino. Both first-run and second-run
+startups produced the healthy `load.log` above, no error dialog, panel
+opens via `_Orbit` / Panels menu, footer shows `v0.1.7`.
+
+### Recovery for v0.1.x users
+
+1. Open **Add/Remove Programs**, find `ORBIT Connector for Rhino`
+   v0.1.6 (or older), click **Uninstall**.
+2. Close Rhino.
+3. Run `OrbitConnector-Rhino-Setup-v0.1.7.exe`. It installs to
+   `%LOCALAPPDATA%\Programs\OrbitConnector\Rhino\0.1.7\` and writes
+   the full plug-in registry entry.
+4. Start Rhino. The plug-in error dialog must not appear; the ORBIT
+   panel auto-registers and the footer reads `v0.1.7`.
+5. If anything looks wrong, paste
+   `%LOCALAPPDATA%\OrbitConnector\load.log` in a new issue.
+
 ## v0.1.6 — Rhino plug-in init hotfix (bundle NuGet transitive DLLs)
 
 **v0.1.5 installed cleanly but the plug-in itself wouldn't load:**
