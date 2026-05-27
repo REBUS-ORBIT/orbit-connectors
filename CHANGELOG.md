@@ -11,6 +11,65 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.6 — Rhino plug-in init hotfix (bundle NuGet transitive DLLs)
+
+**v0.1.5 installed cleanly but the plug-in itself wouldn't load:**
+
+> Rhino Plug-in Error
+> C:\Users\…\OrbitConnector.Rhino.rhp
+> **Unable to load OrbitConnector.Rhino.rhp plug-in: initialization failed.**
+
+Root cause: `src/OrbitConnector.Rhino/OrbitConnector.Rhino.csproj` was set
+to `<CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>`. As a
+result every NuGet transitive runtime DLL was excluded from the build
+output, and the installer payload landed on the user's machine with only
+`OrbitConnector.Rhino.{dll,rhp,pdb,deps.json}` + `Orbit.Sdk.dll` +
+`Orbit.Objects.dll`. Missing from the installed `0.1.6/` folder:
+
+- `Newtonsoft.Json.dll`
+- `Microsoft.Extensions.Logging.Abstractions.dll`
+- `Microsoft.Extensions.DependencyInjection.Abstractions.dll`
+- `System.Drawing.Common.dll`
+- `Microsoft.Win32.SystemEvents.dll`
+
+Rhino 8's `System/` directory does happen to ship `Newtonsoft.Json.dll`,
+but it does **not** ship any of the `Microsoft.Extensions.*` assemblies
+that `Orbit.Sdk` references for `ILogger` injection. So when Rhino reflected
+over the `.rhp` (via `Assembly.GetTypes()`) to find the `PlugIn` subclass,
+the CLR tried to load every assembly the panel + SDK types reference,
+failed to resolve `Microsoft.Extensions.Logging.Abstractions`, raised
+`ReflectionTypeLoadException`, and Rhino surfaced the generic
+"initialization failed" dialog before `OrbitConnectorPlugin.OnLoad` ever
+got a chance to run. The `try/catch` in `OnLoad` could not have caught
+this — the type that owns `OnLoad` itself never finished loading.
+
+### Fix
+
+`src/OrbitConnector.Rhino/OrbitConnector.Rhino.csproj`:
+
+```xml
+<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+```
+
+`dotnet build -c Release` now copies every NuGet runtime DLL into
+`bin/Release/net8.0-windows/`. Rhino-provided assemblies (`RhinoCommon`,
+`Eto`, `Rhino.UI`) stay out via the existing `Private=false` /
+`ExcludeAssets="runtime"` plumbing, so we don't double-bundle and risk
+type-identity drift against whatever Rhino loaded at startup. Inno Setup
+continues to copy everything from the build output directory verbatim, so
+no installer changes were needed.
+
+### Recovery for v0.1.5 users
+
+1. Open **Add/Remove Programs**, find `ORBIT Connector for Rhino` v0.1.5,
+   click **Uninstall**.
+2. Close Rhino.
+3. Run `OrbitConnector-Rhino-Setup-v0.1.6.exe`. It installs to
+   `%LOCALAPPDATA%\Programs\OrbitConnector\Rhino\0.1.6\` (same per-user
+   layout introduced in v0.1.5) and registers the HKCU plug-in entry.
+4. Start Rhino. The plug-in error dialog should not appear; the ORBIT
+   panel should register and display `v0.1.6` in its footer.
+
 ## v0.1.5 — Installer hotfix follow-up (force new install path on upgrade)
 
 **Do not use v0.1.4.** It shipped with one missing piece that caused an

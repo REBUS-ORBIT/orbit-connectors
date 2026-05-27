@@ -14,14 +14,28 @@
     <Authors>REBUS-ORBIT</Authors>
     <Description>ORBIT Connector for Rhino 8</Description>
     <OutputType>Library</OutputType>
-    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!--
+      v0.1.6 hotfix: copy NuGet transitive runtime DLLs into the build output
+      so the installer ships them alongside the .rhp. Without this, Newtonsoft.
+      Json, Microsoft.Extensions.Logging.Abstractions, Microsoft.Extensions.
+      DependencyInjection.Abstractions, System.Drawing.Common, etc. are
+      missing at runtime — Rhino's plug-in loader reflects over the .rhp via
+      Assembly.GetTypes() to find the PlugIn subclass, the CLR fails to
+      resolve those dependencies, and Rhino shows the generic "Unable to load
+      ... initialization failed" dialog before OnLoad ever runs.
+
+      Rhino-provided assemblies (RhinoCommon, Eto, Rhino.UI) stay OUT of the
+      build output via Private=false on the local Reference items and
+      ExcludeAssets="runtime" on the NuGet fallback PackageReferences, so we
+      don't double-bundle and risk type-identity drift with whatever Rhino
+      loaded at startup.
+    -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <!-- Rename output to .rhp after build -->
   <Target Name="RenameToRhp" AfterTargets="Build">
-    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
-          DestinationFiles="$(OutputPath)$(AssemblyName).rhp"
-          OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFiles="$(OutputPath)$(AssemblyName).rhp" OverwriteReadOnlyFiles="true" />
   </Target>
 
   <!--
@@ -71,6 +85,16 @@
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!--
+      System.Drawing.Common is used by Properties/Resources.cs (Bitmap?
+      icon stub) under the #if WINDOWS branch. It's declared explicitly so
+      local Rhino-installed builds (where RhinoCommon comes from HintPath
+      and pulls in no transitive deps) get the same compile + runtime
+      asset as the CI build (where RhinoCommon's NuGet package pulls it
+      in transitively). With CopyLocalLockFileAssemblies=true it also
+      lands in bin/Release for the installer to ship.
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="8.*" />
   </ItemGroup>
 
   <ItemGroup>
