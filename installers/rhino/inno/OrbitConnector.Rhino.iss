@@ -110,8 +110,12 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; \
 ; drag-drop the .rhp first or run the "Install in Rhino 8" Start Menu
 ; shortcut. Per-user (HKCU) matches PrivilegesRequired=lowest above.
 ;
-; In Inno Setup, a literal `{` inside a Subkey: string must be escaped as
-; `{{`. So the {<PluginGuid>} braces become `{{` + PluginGuid + `}` below.
+; The GUID is written as a bare hex string with no enclosing braces --
+; this matches the convention Rhino itself uses when it registers a
+; plug-in from a drag-drop or `_PluginManager` install, and matches every
+; existing key under `HKCU\Software\McNeel\Rhinoceros\8.0\Plug-ins\` on a
+; standard Rhino 8 install. Both forms parse as a valid System.Guid, but
+; no-braces is the form Rhino's reader emits and matches.
 ;
 ; Flags: uninsdeletekey on the first entry so uninstall removes the GUID
 ; subkey (and every value under it) cleanly. The second entry shares the
@@ -121,10 +125,10 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; \
 ; value with the current {app} path -- so the registry always points at
 ; the version that's actually installed.
 ; -----------------------------------------------------------------------------
-Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{{{#PluginGuid}}"; \
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
   ValueType: string; ValueName: "Name"; ValueData: "{#AppName}"; \
   Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{{{#PluginGuid}}"; \
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
   ValueType: string; ValueName: "FileName"; ValueData: "{app}\OrbitConnector.Rhino.rhp"
 
 [Icons]
