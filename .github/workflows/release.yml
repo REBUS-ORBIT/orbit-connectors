@@ -75,15 +75,17 @@ jobs:
         # against the github-orbit feed by default, but no public NuGet
         # publish flow exists yet. Sidestep by cloning REBUS-ORBIT/orbit-sdk
         # alongside the checkout at ../SDK/ and flipping ORBIT_SDK_LOCAL=1 so
-        # Directory.Build.props swaps in ProjectReferences. NUGET_TOKEN is
-        # the CheekiSkrub admin PAT with `repo` scope -- same token used for
-        # the github-orbit NuGet feed.
+        # Directory.Build.props swaps in ProjectReferences.
+        #
+        # ORBIT_DEPLOY_PAT must be a classic PAT (or fine-grained PAT) with
+        # `repo` read access to REBUS-ORBIT/orbit-sdk. NUGET_TOKEN cannot be
+        # reused here because it's scoped to GHCR package read/write, not git.
         run: |
           $sdkParent = Split-Path -Parent $PWD
           $sdkDir    = Join-Path $sdkParent 'SDK'
           if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
-          $token = "${{ secrets.NUGET_TOKEN }}"
-          if (-not $token) { throw "secrets.NUGET_TOKEN is required to clone the private orbit-sdk repo" }
+          $token = "${{ secrets.ORBIT_DEPLOY_PAT }}"
+          if (-not $token) { throw "secrets.ORBIT_DEPLOY_PAT is required to clone the private orbit-sdk repo" }
           git clone --depth 1 "https://x-access-token:$token@github.com/REBUS-ORBIT/orbit-sdk.git" $sdkDir
           # nuget.config also references ../SDK/nupkgs as a local source; create
           # the folder empty so NuGet doesn't fail with NU1301.
@@ -178,16 +180,16 @@ jobs:
         # Same reason as the Windows job: csproj needs the SDK source locally
         # because the SDK isn't published as a NuGet package yet.
         env:
-          NUGET_TOKEN: ${{ secrets.NUGET_TOKEN }}
+          ORBIT_DEPLOY_PAT: ${{ secrets.ORBIT_DEPLOY_PAT }}
         run: |
           set -euo pipefail
           sdk_dir="$(dirname "$PWD")/SDK"
           rm -rf "$sdk_dir"
-          if [[ -z "${NUGET_TOKEN:-}" ]]; then
-            echo "secrets.NUGET_TOKEN is required to clone the private orbit-sdk repo" >&2
+          if [[ -z "${ORBIT_DEPLOY_PAT:-}" ]]; then
+            echo "secrets.ORBIT_DEPLOY_PAT is required to clone the private orbit-sdk repo" >&2
             exit 1
           fi
-          git clone --depth 1 "https://x-access-token:${NUGET_TOKEN}@github.com/REBUS-ORBIT/orbit-sdk.git" "$sdk_dir"
+          git clone --depth 1 "https://x-access-token:${ORBIT_DEPLOY_PAT}@github.com/REBUS-ORBIT/orbit-sdk.git" "$sdk_dir"
           mkdir -p "$sdk_dir/nupkgs"
           echo "Cloned orbit-sdk to $sdk_dir"
 
