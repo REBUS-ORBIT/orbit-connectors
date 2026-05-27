@@ -16,6 +16,13 @@ artifacts/
 ## Rhino
 *.rhp.bak
 
+## Installer build outputs
+installers/rhino/build/
+installers/rhino/dist/
+*.yak
+*.pkg
+OrbitConnector-Rhino-Setup-*.exe
+
 ## OS
 .DS_Store
 Thumbs.db

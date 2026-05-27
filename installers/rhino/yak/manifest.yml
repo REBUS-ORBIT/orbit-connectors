@@ -1,0 +1,25 @@
+---
+# YAK package manifest — ORBIT Connector for Rhino
+# Reference: https://developer.rhino3d.com/guides/yak/the-anatomy-of-a-package/
+#
+# Build with:   installers/rhino/build-yak.ps1
+# Push later:   yak push installers/rhino/dist/<file>.yak
+#               (requires `yak login` first; not automated in CI yet)
+#
+# The build script copies this file into a per-build staging folder so we can
+# override `version:` per release without editing the committed manifest.
+name: orbit-connector
+version: 0.1.0
+authors:
+  - REBUS-ORBIT
+description: |
+  Send and receive geometry from Rhino and Grasshopper to ORBIT.
+  Supports Mesh, Brep, Curve, Surface, SubD, Extrusion, PointCloud,
+  Block Instances, PBR materials, textures, and layer hierarchy.
+url: https://github.com/REBUS-ORBIT/orbit-connectors
+secret: false
+keywords:
+  - orbit
+  - speckle
+  - data exchange
+  - rebus
