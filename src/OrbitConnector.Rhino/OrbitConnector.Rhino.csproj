@@ -6,7 +6,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>OrbitConnector.Rhino</AssemblyName>
     <RootNamespace>OrbitConnector.Rhino</RootNamespace>
-    <Version>0.1.0</Version>
+    <!--
+      Version is inherited from Directory.Build.props (lockstep across all
+      connectors). Do not set <Version> / <AssemblyVersion> / <FileVersion>
+      here; bump $(OrbitConnectorVersion) in Directory.Build.props instead.
+    -->
     <Authors>REBUS-ORBIT</Authors>
     <Description>ORBIT Connector for Rhino 8</Description>
     <OutputType>Library</OutputType>
