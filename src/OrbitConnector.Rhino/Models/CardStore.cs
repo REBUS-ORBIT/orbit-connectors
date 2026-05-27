@@ -38,13 +38,16 @@ public class CardStore
         CardsChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>
+    /// Updates card metadata (project, model, layer selections, last-sent time).
+    /// Does NOT fire <see cref="CardsChanged"/> — the UI controls update themselves directly.
+    /// </summary>
     public void UpdateCard(ConnectorCard card)
     {
         var idx = _cards.FindIndex(c => c.Id == card.Id);
         if (idx >= 0) _cards[idx] = card;
         else _cards.Add(card);
         Save();
-        CardsChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void RemoveCard(string cardId)

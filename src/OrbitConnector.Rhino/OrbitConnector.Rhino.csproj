@@ -129,6 +129,15 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\**\*" />
+    <!--
+      v0.1.8: the WebView-based ORBIT panel loads its UI from
+      Assembly.GetManifestResourceStream("OrbitConnector.Rhino.UI.wwwroot.index.html").
+      Without this embedded-resource glob the panel falls back to its
+      hardcoded "could not load UI resources" error page and the user
+      sees an empty dark panel — same shape as the v0.1.0-v0.1.7
+      placeholder regression. Keep the wwwroot tree embedded.
+    -->
+    <EmbeddedResource Include="UI\wwwroot\**\*" />
   </ItemGroup>
 
 </Project>

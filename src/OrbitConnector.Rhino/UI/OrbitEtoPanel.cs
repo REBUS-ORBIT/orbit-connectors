@@ -1,33 +1,28 @@
-using System;
 using System.Diagnostics;
-using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Threading;
-using System.Threading.Tasks;
 using Eto.Forms;
-using Eto.Drawing;
-using Newtonsoft.Json.Linq;
+using Orbit.Sdk.Api;
+using Orbit.Sdk.Api.Models;
+using Orbit.Sdk.Transport;
+using OrbitConnector.Rhino.Auth;
+using OrbitConnector.Rhino.Models;
+using OrbitConnector.Rhino.Pipeline;
 using Rhino;
 using Rhino.UI;
-using OrbitConnector.Rhino.Models;
-using OrbitConnector.Rhino.Auth;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace OrbitConnector.Rhino.UI;
 
-/// <summary>
-/// Main ORBIT dockable panel. Hosts the card list and navigation between views.
-/// Phase 1: Pure Eto.Forms implementation.
-/// Phase 2: Will host a WebView for richer UI.
-/// </summary>
 [System.Runtime.InteropServices.Guid("21621060-21E4-4A81-8FF6-3E11FBEF5D04")]
 public class OrbitEtoPanel : Panel, IPanel
 {
-    /// <summary>Resource name (RootNamespace + path) of the embedded brand logo.</summary>
-    private const string LogoResourceName = "OrbitConnector.Rhino.Resources.orbit-logo.png";
+    public static System.Guid PanelId => typeof(OrbitEtoPanel).GUID;
 
-    /// <summary>Pixel height used to render the logo in the panel header.</summary>
-    private const int LogoHeight = 32;
+    // ── Update check (v0.1.2) ─────────────────────────────────────────────────
 
     /// <summary>GitHub URL the user is sent to when they want to download the latest release.</summary>
     private const string LatestReleasePageUrl =
@@ -40,48 +35,52 @@ public class OrbitEtoPanel : Panel, IPanel
     /// <summary>Process-wide HttpClient. Constructing one per click is an anti-pattern.</summary>
     private static readonly HttpClient _http = CreateUpdateCheckClient();
 
-    private enum NavState { Home, Login, CardConfig, Progress }
-    private NavState _state = NavState.Home;
+    // ── Core services ─────────────────────────────────────────────────────────
 
-    private readonly DynamicLayout _layout;
-    private readonly Label _statusLabel;
-    private readonly Label _versionLabel;
-    private readonly LinkButton _updateCheckLink;
-    private readonly ImageView? _logoView;
-    private readonly Button _addSendCardButton;
-    private readonly Button _addReceiveCardButton;
+    private readonly ServerConfig     _config;
+    private readonly OrbitTokenStore  _store;
+    private readonly OrbitAuthManager _auth;
+    private readonly RhinoSendPipeline _pipeline = new();
+    private CardStore _cardStore = null!;
 
-    public static System.Guid PanelId => typeof(OrbitEtoPanel).GUID;
+    private OrbitClient? _client;
+    private string _token     = string.Empty;
+    private string _serverUrl = string.Empty;
+
+    // ── WebView ───────────────────────────────────────────────────────────────
+
+    private readonly WebView _webView;
+    private bool _uiReady;
+
+    // Tracks which document we last pushed cards for, so PanelShown only
+    // re-pushes when the user actually switched Rhino documents. Without
+    // this, every tab-switch in the Rhino panel host triggers SendCards
+    // → JS renderCards → full DOM teardown, which wipes the user's
+    // in-flight UI state (selected project/model, "converting geometry…"
+    // progress, entered text, etc).
+    private uint _lastSyncedDocSerial = 0;
+
+    // ── Constructor ───────────────────────────────────────────────────────────
 
     public OrbitEtoPanel(uint documentSerialNumber)
     {
-        _layout = new DynamicLayout { DefaultSpacing = new Size(4, 4), Padding = new Padding(8) };
-        _statusLabel = new Label { Text = "ORBIT", Font = new Font(SystemFont.Bold, 13) };
-        _versionLabel = new Label
-        {
-            Text = $"v{OrbitConnectorPlugin.Version}",
-            TextColor = Colors.Gray,
-            Font = new Font(SystemFont.Default, 9f),
-            TextAlignment = TextAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        _updateCheckLink = new LinkButton
-        {
-            Text = "Check for updates",
-            Font = new Font(SystemFont.Default, 9f),
-        };
-        _logoView = TryLoadLogo();
-        _addSendCardButton    = new Button { Text = "+ Send"    };
-        _addReceiveCardButton = new Button { Text = "+ Receive" };
+        _config = ServerConfig.Default;
+        _store  = new OrbitTokenStore(OrbitConnectorPlugin.Instance!);
+        _auth   = new OrbitAuthManager(_config);
 
-        BuildLayout();
-        ApplyTheme();
+        var activeDoc = RhinoDoc.ActiveDoc;
+        _cardStore = activeDoc != null
+            ? CardStore.LoadFromDocument(activeDoc)
+            : (CardStore.Instance ?? new CardStore());
+        _cardStore.CardsChanged += OnCardsChanged;
 
-        _addSendCardButton.Click    += (s, e) => OnAddCard(CardType.Send);
-        _addReceiveCardButton.Click += (s, e) => OnAddCard(CardType.Receive);
-        _updateCheckLink.Click      += OnUpdateCheckClicked;
+        _webView = new WebView();
+        _webView.DocumentLoading += OnDocumentLoading;
+        _webView.DocumentLoaded  += OnDocumentLoaded;
 
-        Content = _layout;
+        Content = _webView;
+
+        LoadHtml();
     }
 
     private static HttpClient CreateUpdateCheckClient()
@@ -99,183 +98,504 @@ public class OrbitEtoPanel : Panel, IPanel
         return client;
     }
 
-    private static ImageView? TryLoadLogo()
+    // ── HTML loading ──────────────────────────────────────────────────────────
+
+    private void LoadHtml()
     {
+        const string resName = "OrbitConnector.Rhino.UI.wwwroot.index.html";
         try
         {
-            var asm = typeof(OrbitConnectorPlugin).Assembly;
-            using var stream = asm.GetManifestResourceStream(LogoResourceName);
-            if (stream == null)
+            using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resName);
+            if (stream != null)
             {
-                RhinoApp.WriteLine(
-                    $"ORBIT: logo resource '{LogoResourceName}' not found in assembly.");
-                return null;
+                using var reader = new System.IO.StreamReader(stream);
+                var html = reader.ReadToEnd();
+                // Write to temp file so the WebView can load it with a proper base URL
+                var tmpDir  = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "orbit_connector");
+                System.IO.Directory.CreateDirectory(tmpDir);
+                var tmpPath = System.IO.Path.Combine(tmpDir, "index.html");
+                System.IO.File.WriteAllText(tmpPath, html);
+                _webView.Url = new Uri("file:///" + tmpPath.Replace('\\', '/'));
+                return;
             }
+        }
+        catch { }
 
-            // Bitmap takes ownership of the stream's data; copy to a memory
-            // stream so we can dispose the manifest stream eagerly without
-            // ripping the bytes out from under Eto.
-            using var ms = new MemoryStream();
-            stream.CopyTo(ms);
-            ms.Position = 0;
+        // Fallback: minimal error page
+        _webView.LoadHtml("<html><body style='background:#141414;color:#e8e8e8;font-family:sans-serif;padding:20px'>" +
+                          "<p>ORBIT Connector could not load UI resources.</p></body></html>", new Uri("about:blank"));
+    }
 
-            var bitmap = new Bitmap(ms);
-            return new ImageView
+    // ── Message handling: JS → C# ─────────────────────────────────────────────
+
+    private void OnDocumentLoading(object? sender, WebViewLoadingEventArgs e)
+    {
+        var url = e.Uri?.ToString() ?? "";
+        if (!url.StartsWith("orbit://msg/", StringComparison.OrdinalIgnoreCase)) return;
+
+        e.Cancel = true;
+
+        // Parse: orbit://msg/{action}?d={json}
+        var withoutScheme = url.Substring("orbit://msg/".Length);
+        var qIdx    = withoutScheme.IndexOf('?');
+        var action  = qIdx >= 0 ? withoutScheme.Substring(0, qIdx) : withoutScheme;
+        var dataStr = "{}";
+        if (qIdx >= 0)
+        {
+            var query = withoutScheme.Substring(qIdx + 1);
+            foreach (var part in query.Split('&'))
             {
-                Image = bitmap,
-                Size = new Size((int)Math.Round(LogoHeight * (bitmap.Width / (double)bitmap.Height)), LogoHeight),
-            };
-        }
-        catch (Exception ex)
-        {
-            RhinoApp.WriteLine($"ORBIT: failed to load brand logo: {ex.Message}");
-            return null;
-        }
-    }
-
-    private void BuildLayout()
-    {
-        // Header row:
-        //
-        //   [logo] [ORBIT title]                                          v0.1.x
-        //          [optional subline]                            Check for updates
-        //
-        // The version + update-check column is right-aligned so the title can
-        // grow leftward without colliding with the metadata.
-        var versionRow = new StackLayout
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            HorizontalContentAlignment = HorizontalAlignment.Right,
-            Items = { _versionLabel, new Label { Text = "·", TextColor = Color.FromArgb(120, 120, 120) }, _updateCheckLink },
-        };
-
-        var header = new DynamicLayout { DefaultSpacing = new Size(6, 0) };
-        header.BeginHorizontal();
-        if (_logoView != null)
-        {
-            header.Add(_logoView, xscale: false, yscale: false);
-        }
-        header.Add(_statusLabel, xscale: false, yscale: true);
-        header.Add(null);                  // expanding spacer pushes metadata right
-        header.Add(versionRow, xscale: false, yscale: true);
-        header.EndHorizontal();
-
-        _layout.BeginVertical();
-        _layout.Add(header);
-        _layout.Add(new Label { Text = "Connected to ORBIT", TextColor = Colors.Gray });
-        _layout.Add((Eto.Forms.Control?)null); // separator
-        _layout.Add(_addSendCardButton);
-        _layout.Add(_addReceiveCardButton);
-        // TODO: card list control goes here
-        _layout.Add(null); // spacer
-        _layout.EndVertical();
-    }
-
-    private void ApplyTheme()
-    {
-        BackgroundColor = Color.FromArgb(30, 30, 30);
-        _statusLabel.TextColor = Colors.White;
-        // Keep the version label a touch dimmer than the title so it reads as
-        // metadata rather than a heading.
-        _versionLabel.TextColor = Color.FromArgb(170, 170, 170);
-        // Light-blue link colour that reads on the dark panel background.
-        _updateCheckLink.TextColor = Color.FromArgb(102, 178, 255);
-    }
-
-    private void OnAddCard(CardType type)
-    {
-        // TODO: open card config view, pre-filled for type
-        MessageBox.Show($"Adding {type} card — project picker coming soon.", "ORBIT");
-    }
-
-    // ---------------------------------------------------------------------
-    // Update check
-    // ---------------------------------------------------------------------
-
-    private async void OnUpdateCheckClicked(object? sender, EventArgs e)
-    {
-        // Snapshot the original text so we can restore it on every exit path.
-        var originalText = _updateCheckLink.Text;
-        _updateCheckLink.Enabled = false;
-        _updateCheckLink.Text = "Checking…";
-
-        try
-        {
-            var result = await CheckForUpdatesAsync(CancellationToken.None).ConfigureAwait(true);
-            HandleUpdateCheckResult(result);
-        }
-        catch (Exception ex)
-        {
-            // Defensive: CheckForUpdatesAsync already wraps its own failures
-            // into an UpdateCheckResult. This is the "nothing else worked"
-            // safety net so the UI never hangs in the disabled state.
-            RhinoApp.WriteLine($"ORBIT: update check failed unexpectedly: {ex.Message}");
-            MessageBox.Show(
-                this,
-                $"Couldn't check for updates: {ex.Message}. Try again later.",
-                "ORBIT — update check failed",
-                MessageBoxButtons.OK,
-                MessageBoxType.Warning);
-        }
-        finally
-        {
-            _updateCheckLink.Text = originalText;
-            _updateCheckLink.Enabled = true;
-        }
-    }
-
-    private void HandleUpdateCheckResult(UpdateCheckResult result)
-    {
-        var current = OrbitConnectorPlugin.Version;
-        switch (result.Kind)
-        {
-            case UpdateCheckKind.UpToDate:
-                MessageBox.Show(
-                    this,
-                    $"You're up to date. Running v{current}.",
-                    "ORBIT — up to date",
-                    MessageBoxButtons.OK,
-                    MessageBoxType.Information);
-                break;
-
-            case UpdateCheckKind.NewerAvailable:
-                var answer = MessageBox.Show(
-                    this,
-                    $"ORBIT Connector v{result.LatestVersion} is available. " +
-                    $"You're running v{current}.\n\nOpen the releases page to download?",
-                    "ORBIT — update available",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxType.Information,
-                    MessageBoxDefaultButton.Yes);
-                if (answer == DialogResult.Yes)
+                if (part.StartsWith("d=", StringComparison.Ordinal))
                 {
-                    OpenReleasesPage();
+                    dataStr = Uri.UnescapeDataString(part.Substring(2));
+                    break;
                 }
-                break;
-
-            case UpdateCheckKind.Failed:
-            default:
-                MessageBox.Show(
-                    this,
-                    $"Couldn't check for updates: {result.ErrorMessage}. Try again later.",
-                    "ORBIT — update check failed",
-                    MessageBoxButtons.OK,
-                    MessageBoxType.Warning);
-                break;
+            }
         }
+
+        JObject data;
+        try { data = JObject.Parse(dataStr); }
+        catch { data = new JObject(); }
+
+        // Dispatch on background thread so we don't block the browser
+        Task.Run(() => DispatchMessage(action, data));
     }
 
-    private static void OpenReleasesPage()
+    private async Task DispatchMessage(string action, JObject data)
     {
         try
         {
-            // UseShellExecute=true is required to open a URL via the default browser on .NET 5+.
-            Process.Start(new ProcessStartInfo(LatestReleasePageUrl) { UseShellExecute = true });
+            switch (action)
+            {
+                case "ready":
+                    _uiReady = true;
+                    // v0.1.2: surface the connector version into the WebView so the
+                    // header footer can render "v<X.Y.Z>" without a round-trip.
+                    SendToJs(new { type = "version", version = OrbitConnectorPlugin.Version });
+                    await TryRestoreSessionAsync();
+                    break;
+
+                case "login":
+                    await HandleLoginAsync(data);
+                    break;
+
+                case "logout":
+                    HandleLogout();
+                    break;
+
+                case "addCard":
+                    AddCard(string.Equals(data.Value<string>("type"), "receive", StringComparison.OrdinalIgnoreCase)
+                        ? CardType.Receive : CardType.Send);
+                    break;
+
+                case "removeCard":
+                    RemoveCard(data.Value<string>("id") ?? "");
+                    break;
+
+                case "updateCard":
+                    UpdateCardFromJs(data["card"] as JObject);
+                    break;
+
+                case "getProjects":
+                    await GetProjectsAsync(data.Value<string>("cardId") ?? "");
+                    break;
+
+                case "getModels":
+                    await GetModelsAsync(
+                        data.Value<string>("cardId") ?? "",
+                        data.Value<string>("projectId") ?? "");
+                    break;
+
+                case "createProject":
+                    await CreateProjectAsync(
+                        data.Value<string>("cardId") ?? "",
+                        data.Value<string>("name") ?? "");
+                    break;
+
+                case "send":
+                    await HandleSendAsync(data);
+                    break;
+
+                case "receive":
+                    SendToJs(new { type = "sendErr", cardId = data.Value<string>("cardId"), message = "Receive pipeline coming soon." });
+                    break;
+
+                case "requestLayers":
+                    SendLayers();
+                    break;
+
+                case "captureSelection":
+                    CaptureSelection(data.Value<string>("cardId") ?? "");
+                    break;
+
+                case "openUrl":
+                    var urlToOpen = data.Value<string>("url") ?? "";
+                    if (!string.IsNullOrEmpty(urlToOpen))
+                        Application.Instance.AsyncInvoke(() =>
+                            Process.Start(new ProcessStartInfo(urlToOpen) { UseShellExecute = true }));
+                    break;
+
+                case "checkUpdates":
+                    // v0.1.2: GitHub-API-backed update check, mirrored back into JS so
+                    // the header link can change its label / open a confirm dialog.
+                    await HandleUpdateCheckAsync();
+                    break;
+            }
         }
         catch (Exception ex)
         {
-            RhinoApp.WriteLine($"ORBIT: failed to open releases page: {ex.Message}");
+            RhinoApp.WriteLine($"[OrbitConnector] dispatch error for '{action}': {ex.Message}");
+        }
+    }
+
+    private void OnDocumentLoaded(object? sender, WebViewLoadedEventArgs e)
+    {
+        // Nothing needed here — JS calls orbit://msg/ready when it initialises
+    }
+
+    // ── C# → JS ──────────────────────────────────────────────────────────────
+
+    private void SendToJs(object payload)
+    {
+        var json = JsonConvert.SerializeObject(payload);
+        var escaped = json.Replace("\\", "\\\\").Replace("'", "\\'");
+        Application.Instance.AsyncInvoke(() =>
+        {
+            try { _webView.ExecuteScript($"window.orbitReceive('{escaped}')"); }
+            catch { }
+        });
+    }
+
+    // ── Auth ──────────────────────────────────────────────────────────────────
+
+    private async Task TryRestoreSessionAsync()
+    {
+        var url = _store.GetToken(_config.ProdUrl) != null ? _config.ProdUrl : _config.DevUrl;
+        var token = _store.GetToken(url);
+        if (string.IsNullOrEmpty(token)) return;
+        await FinishLoginAsync(url, token);
+    }
+
+    private async Task HandleLoginAsync(JObject data)
+    {
+        var url    = (data.Value<string>("url") ?? "").TrimEnd('/');
+        var method = data.Value<string>("method") ?? "oauth";
+        if (string.IsNullOrEmpty(url)) return;
+
+        try
+        {
+            string token;
+            if (method == "pat")
+            {
+                token = data.Value<string>("token") ?? "";
+                if (string.IsNullOrEmpty(token)) { SendToJs(new { type = "loginErr", message = "Token is empty." }); return; }
+            }
+            else
+            {
+                token = await _auth.AuthenticateAsync(
+                    url.Contains("dev") ? ServerTarget.Dev : ServerTarget.Prod);
+            }
+            _store.SaveToken(url, token);
+            await FinishLoginAsync(url, token);
+        }
+        catch (OperationCanceledException)
+        {
+            SendToJs(new { type = "loginErr", message = "Login cancelled." });
+        }
+        catch (Exception ex)
+        {
+            SendToJs(new { type = "loginErr", message = ex.Message });
+        }
+    }
+
+    private async Task FinishLoginAsync(string url, string token)
+    {
+        try
+        {
+            var client = new OrbitClient(url, token);
+            var user   = await client.GetActiveUserAsync();
+            if (user == null)
+            {
+                _store.ClearToken(url);
+                SendToJs(new { type = "loginErr", message = "Server rejected the token." });
+                return;
+            }
+            _client    = client;
+            _token     = token;
+            _serverUrl = url;
+
+            SendToJs(new
+            {
+                type      = "loginOk",
+                name      = user.Name ?? user.Email,
+                email     = user.Email,
+                serverUrl = url
+            });
+
+            // Send current cards
+            SendCards();
+        }
+        catch (Exception ex)
+        {
+            SendToJs(new { type = "loginErr", message = ex.Message });
+        }
+    }
+
+    private void HandleLogout()
+    {
+        _store.ClearToken(_serverUrl);
+        _client = null; _token = ""; _serverUrl = "";
+        SendToJs(new { type = "logout" });
+    }
+
+    // ── Card management ───────────────────────────────────────────────────────
+
+    private void AddCard(CardType type)
+    {
+        var card = new ConnectorCard { Type = type, Target = _store.LastTarget };
+        _cardStore.AddCard(card);
+        // CardsChanged fires → sends updated card list to JS
+    }
+
+    private void RemoveCard(string cardId)
+    {
+        _cardStore.RemoveCard(cardId);
+    }
+
+    private void UpdateCardFromJs(JObject? cardJson)
+    {
+        if (cardJson == null) return;
+        var card = cardJson.ToObject<ConnectorCard>();
+        if (card != null) _cardStore.UpdateCard(card);
+    }
+
+    private void OnCardsChanged(object? sender, EventArgs e) => SendCards();
+
+    private void SendCards()
+    {
+        SendToJs(new { type = "cards", items = _cardStore.Cards });
+    }
+
+    // ── Projects / Models ─────────────────────────────────────────────────────
+
+    private async Task GetProjectsAsync(string cardId)
+    {
+        if (_client == null) return;
+        try
+        {
+            var projects = await _client.GetProjectsAsync();
+            SendToJs(new
+            {
+                type   = "projects",
+                cardId,
+                items  = projects.Select(p => new { id = p.Id, name = p.Name })
+            });
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[OrbitConnector] getProjects: {ex.Message}");
+        }
+    }
+
+    private async Task GetModelsAsync(string cardId, string projectId)
+    {
+        if (_client == null || string.IsNullOrEmpty(projectId)) return;
+        try
+        {
+            var models = await _client.GetModelsAsync(projectId);
+            SendToJs(new
+            {
+                type   = "models",
+                cardId,
+                items  = models.Select(m => new { id = m.Id, name = m.Name })
+            });
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[OrbitConnector] getModels: {ex.Message}");
+        }
+    }
+
+    private async Task CreateProjectAsync(string cardId, string name)
+    {
+        if (_client == null || string.IsNullOrEmpty(name)) return;
+        try
+        {
+            var project = await _client.CreateProjectAsync(name);
+            // Refresh project list for this card
+            await GetProjectsAsync(cardId);
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[OrbitConnector] createProject: {ex.Message}");
+        }
+    }
+
+    // ── Layers ────────────────────────────────────────────────────────────────
+
+    private void CaptureSelection(string cardId)
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc == null) return;
+        var ids = doc.Objects.GetSelectedObjects(false, false)
+                     .Select(o => o.Id.ToString())
+                     .ToList();
+        var card = _cardStore.Cards.FirstOrDefault(c => c.Id == cardId);
+        if (card == null) return;
+        card.SelectedObjectIds = ids;
+        _cardStore.UpdateCard(card);
+        SendToJs(new { type = "selectionCaptured", cardId, count = ids.Count });
+    }
+
+    private void SendLayers()
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc == null) return;
+        var layers = doc.Layers
+            .Where(l => !l.IsDeleted)
+            .Select(l => new
+            {
+                fullPath = l.FullPath,
+                name     = l.Name,
+                depth    = l.FullPath.Split(new[] { "::" }, StringSplitOptions.None).Length - 1
+            })
+            .ToList();
+        SendToJs(new { type = "layers", layers });
+    }
+
+    // ── Send ──────────────────────────────────────────────────────────────────
+
+    private async Task HandleSendAsync(JObject data)
+    {
+        var cardId      = data.Value<string>("cardId") ?? "";
+        var projId      = data.Value<string>("projId") ?? "";
+        var mdlId       = data.Value<string>("mdlId") ?? "";
+        var newMdlName  = data.Value<string>("newModelName");
+
+        if (_client == null || string.IsNullOrEmpty(_token))
+        {
+            SendToJs(new { type = "sendErr", cardId, message = "Not logged in." });
+            return;
+        }
+
+        var card = _cardStore.Cards.FirstOrDefault(c => c.Id == cardId);
+        if (card == null)
+        {
+            SendToJs(new { type = "sendErr", cardId, message = "Card not found." });
+            return;
+        }
+
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc == null)
+        {
+            SendToJs(new { type = "sendErr", cardId, message = "No active Rhino document." });
+            return;
+        }
+
+        // Create model if a new name was provided
+        if (!string.IsNullOrEmpty(newMdlName))
+        {
+            try
+            {
+                var model = await _client.CreateModelAsync(projId, newMdlName);
+                card.ModelId   = model.Id ?? "";
+                card.ModelName = model.Name ?? "";
+                mdlId = card.ModelId;
+                _cardStore.UpdateCard(card);
+            }
+            catch (Exception ex)
+            {
+                SendToJs(new { type = "sendErr", cardId, message = $"Create model: {ex.Message}" });
+                return;
+            }
+        }
+
+        if (string.IsNullOrEmpty(mdlId))
+        {
+            SendToJs(new { type = "sendErr", cardId, message = "Select or create a model." });
+            return;
+        }
+
+        card.ProjectId = projId;
+        card.ModelId   = mdlId;
+
+        using var transport = new ServerTransport(_serverUrl, projId, _token);
+        var progress = new Progress<(string s, int p)>(x =>
+            SendToJs(new { type = "sendProgress", cardId, status = x.s, percent = x.p }));
+
+        try
+        {
+            var versionId = await _pipeline.SendAsync(card, doc, transport, _client, progress);
+            card.LastVersionId = versionId;
+            card.LastSentAt    = DateTime.UtcNow;
+            _cardStore.UpdateCard(card);
+            var resultUrl = $"{_serverUrl}/projects/{projId}/models/{mdlId}";
+            SendToJs(new { type = "sendOk", cardId, versionId, url = resultUrl });
+        }
+        catch (Exception ex)
+        {
+            SendToJs(new { type = "sendErr", cardId, message = ex.Message });
+        }
+    }
+
+    // ── Update check (v0.1.2) ─────────────────────────────────────────────────
+    //
+    // The header bar in the WebView UI ships a "Check for updates" link next to
+    // the version label. Clicking it posts orbit://msg/checkUpdates?d={}; this
+    // method hits the GitHub releases API, compares against the assembly
+    // version, and sends one of three structured replies back to JS so the
+    // panel can render the right toast / confirm dialog without bouncing
+    // through any native MessageBox (which would block the panel's UI thread
+    // and feel out of place on top of the WebView).
+
+    private async Task HandleUpdateCheckAsync()
+    {
+        try
+        {
+            var result = await CheckForUpdatesAsync(CancellationToken.None);
+            switch (result.Kind)
+            {
+                case UpdateCheckKind.UpToDate:
+                    SendToJs(new
+                    {
+                        type    = "updateCheck",
+                        kind    = "uptodate",
+                        current = OrbitConnectorPlugin.Version,
+                    });
+                    break;
+                case UpdateCheckKind.NewerAvailable:
+                    SendToJs(new
+                    {
+                        type    = "updateCheck",
+                        kind    = "newer",
+                        current = OrbitConnectorPlugin.Version,
+                        latest  = result.LatestVersion,
+                        url     = LatestReleasePageUrl,
+                    });
+                    break;
+                case UpdateCheckKind.Failed:
+                default:
+                    SendToJs(new
+                    {
+                        type    = "updateCheck",
+                        kind    = "failed",
+                        message = result.ErrorMessage ?? "unknown error",
+                    });
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Defensive: CheckForUpdatesAsync wraps its own failures into a
+            // result, but if the wrapper itself throws (allocation failure,
+            // CTS misuse, etc.) we still report instead of leaving the JS
+            // link disabled forever.
+            SendToJs(new
+            {
+                type    = "updateCheck",
+                kind    = "failed",
+                message = ex.Message,
+            });
         }
     }
 
@@ -357,12 +677,28 @@ public class OrbitEtoPanel : Panel, IPanel
         public static UpdateCheckResult Fail(string message) => new(UpdateCheckKind.Failed, null, message);
     }
 
-    // IPanel implementation
+    // ── IPanel ────────────────────────────────────────────────────────────────
+
     void IPanel.PanelShown(uint documentSerialNumber, ShowPanelReason reason)
     {
         var doc = RhinoDoc.FromRuntimeSerialNumber(documentSerialNumber);
-        if (doc != null)
-            CardStore.LoadFromDocument(doc);
+        var docChanged = doc != null && documentSerialNumber != _lastSyncedDocSerial;
+
+        if (doc != null && docChanged)
+        {
+            _cardStore.CardsChanged -= OnCardsChanged;
+            _cardStore = CardStore.LoadFromDocument(doc);
+            _cardStore.CardsChanged += OnCardsChanged;
+            _lastSyncedDocSerial = documentSerialNumber;
+        }
+
+        // Only push cards back to JS when the document actually changed
+        // (or on the very first show). Pure visibility changes — e.g. the
+        // user switching to another Rhino panel tab and back — leave the
+        // existing JS state intact, preserving in-progress uploads, the
+        // currently-selected project/model dropdowns, expanded cards, and
+        // any text the user has typed into "new project / new model".
+        if (_uiReady && docChanged) SendCards();
     }
 
     void IPanel.PanelHidden(uint documentSerialNumber, ShowPanelReason reason) { }

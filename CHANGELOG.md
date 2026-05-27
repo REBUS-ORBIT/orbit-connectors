@@ -11,6 +11,167 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.8 — Restore full Rhino panel functionality (regression fix)
+
+**v0.1.7 made the plug-in load again, but the panel content itself was a
+two-button "+ Send / + Receive" stub with a `MessageBox.Show("project
+picker coming soon")` placeholder behind both buttons.** The full
+WebView-based UI (project / model picker, layer tree, send pipeline,
+receive scaffold, real Speckle/ORBIT mesh + material + UV upload) had
+been silently dropped between the May 20 working `.rhp` and the
+v0.1.0-v0.1.7 installer-packaging release branch. v0.1.8 restores the
+working panel and re-applies the v0.1.2 / v0.1.6 / v0.1.7 polish on
+top.
+
+### Root cause
+
+When the `orbit-connectors` repo was scaffolded for the multi-connector
+release pipeline, the `src/OrbitConnector.Rhino/UI/OrbitEtoPanel.cs`
+file was committed as a 79-line Eto stub rather than ported from the
+working source-of-truth in the parent ORBIT meta-repo
+(`ORBIT/Connectors/src/OrbitConnector.Rhino/UI/OrbitEtoPanel.cs`,
+527 lines, last touched 2026-05-20 commit `245fb65`). Every later
+release branch built on top of that stub. The v0.1.2 work added a
+version label + GitHub-API "Check for updates" link **on top of the
+stub**, the v0.1.3 - v0.1.7 work fixed installer + assembly-loading
+issues — but nobody noticed the panel itself was a placeholder
+because the plug-in didn't successfully load until v0.1.7.
+
+In addition to the panel, the following files were either missing
+from `orbit-connectors` entirely or out-of-date relative to the
+working source:
+
+- **Missing converters** (12 files): `RhinoMaterialHelper.cs`,
+  `RhinoNativeEncoder.cs`, `RhinoBrepDisplayMeshes.cs`,
+  `RhinoCurveConverter.cs`, `RhinoExtrusionConverter.cs`,
+  `RhinoInstanceConverter.cs`, `RhinoObjectMeshes.cs`,
+  `RhinoPointCloudConverter.cs`, `RhinoPointConverter.cs`,
+  `RhinoSubDConverter.cs`, `RhinoSurfaceConverter.cs`,
+  `RhinoTextConverter.cs`. Without these the connector could only
+  send `Mesh` / `Brep` / fallback geometry; curves, points, instances,
+  text, point clouds, sub-Ds, surfaces, extrusions all fell off.
+- **Missing WebView UI**: `UI/wwwroot/index.html`. Without the
+  embedded HTML the panel renders nothing but the static fallback
+  "ORBIT Connector could not load UI resources" error.
+- **Stale baseline scaffolds** for `Auth/*`, `Models/*`, `Commands/*`,
+  `Converters/ConversionContext.cs`, `Converters/ToOrbit/{IRhinoToOrbitConverter,RhinoBrepConverter,RhinoFallbackConverter,RhinoMeshConverter}.cs`,
+  `Pipeline/RhinoSendPipeline.cs`, `Properties/AssemblyInfo.cs`. Every
+  one of these files differed from the working ORBIT/Connectors copy
+  (verified by MD5 hash compare).
+
+### Fix
+
+`UI/OrbitEtoPanel.cs` and the 24 supporting files listed above are now
+**byte-for-byte the May 20 working baseline**, with a thin merge layer
+that preserves every additive v0.1.2 / v0.1.6 / v0.1.7 change:
+
+- **Version label + "Check for updates" link** are now rendered inside
+  the WebView header (top-right of the panel) by `index.html`, with
+  matching styling. The C# side exposes `OrbitConnectorPlugin.Version`
+  via a new `getVersion` JS dispatch action and answers the "check for
+  updates" click via a new `checkUpdates` action that hits
+  `https://api.github.com/repos/REBUS-ORBIT/orbit-connectors/releases/latest`,
+  parses the tag through the same `System.Version`-based comparator
+  v0.1.2 used, and replies with `{ kind: 'uptodate' | 'newer' | 'failed' }`
+  for the JS to render. The 10-second timeout, GitHub User-Agent,
+  pre-release suffix stripping, and graceful HTTP-error handling
+  carried over verbatim.
+- **Diagnostic load log** (`%LOCALAPPDATA%\OrbitConnector\load.log`)
+  in `OrbitConnectorPlugin.cs` is **untouched** — that file kept the
+  v0.1.7 version with `Log()` instrumentation around cctor / ctor /
+  OnLoad / panel registration / doc-event wiring.
+- **`OrbitConnector.Rhino.csproj`** keeps the v0.1.6
+  `<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>`
+  fix and the v0.1.7 `<PackageReference Include="System.Drawing.Common"
+  ExcludeAssets="runtime" PrivateAssets="all" />` fix. The only edit
+  is a new `<EmbeddedResource Include="UI\wwwroot\**\*" />` entry so
+  the WebView can resolve the embedded `index.html` at runtime.
+- **`Properties/Resources.cs`** is unchanged from v0.1.7 — the WebView
+  panel doesn't consume the `OrbitIcon16Bytes` byte[] placeholder, so
+  there's no metadata regression risk in keeping it. The orbit logo
+  ships through `Resources/orbit-logo.png` (also unchanged).
+- **`installers/rhino/inno/OrbitConnector.Rhino.iss`** is unchanged
+  from v0.1.7 — the registry write-out, `%LOCALAPPDATA%\Programs\
+  OrbitConnector\Rhino\<v>\` install path, `UsePreviousAppDir=no`,
+  `LoadProtection` clear, and orphan-YAK-dir cleanup are all correct.
+
+### Build / SDK alignment
+
+The May 20 send pipeline references SDK types
+(`Orbit.Objects.BuiltElements.View3D`, `Orbit.Objects.Geometry.Vector`,
+plus `OrbitObject.{CollectionType,LayerPath,LayerColor,Views}`) that
+exist in the parent ORBIT meta-repo's local SDK at commit `245fb65`
+but were never pushed to the standalone `orbit-sdk` repository on
+GitHub. Cloning `orbit-sdk` from GitHub in CI therefore yielded an
+SDK that was missing the surface the connector needed, and the
+build failed before any artefacts were produced.
+
+To keep `orbit-connectors` self-contained without forcing an
+out-of-band push to `orbit-sdk`, this release vendors the May 20
+SDK source under `vendor/SDK/src/` (36 files copied verbatim from
+`245fb65:SDK/src/`). `Directory.Build.props` defaults
+`OrbitSdkLocal=true` and `OrbitSdkPath=$(MSBuildThisFileDirectory)
+vendor\SDK\src` so a clean clone builds without needing
+`ORBIT_SDK_LOCAL=1` or a sibling SDK clone. The CI workflow's
+`Clone ORBIT SDK` step is now a no-op for `OrbitSdkPath` resolution
+but stays in place as documentation for the future migration back
+to a separate SDK repo (just delete `vendor/SDK/`, repoint
+`OrbitSdkPath`, and remove this paragraph from the changelog).
+
+### What works again in v0.1.8
+
+After installing v0.1.8 the ORBIT panel renders the full functional UI
+that the May 20 `.rhp` shipped:
+
+- ORBIT brand header with "v0.1.8" and "Check for updates" in the
+  top-right corner.
+- OAuth + Personal Access Token login against
+  `https://orbit.rebus.industries` (or any custom URL).
+- Per-document "send" and "receive" cards persisted into the Rhino
+  document strings (so they survive document save/reopen).
+- Project picker dropdown populated from the user's ORBIT account,
+  including inline "+" to create a new project on the fly.
+- Model picker dropdown populated from the selected project, plus
+  inline "+" to create a new model.
+- Layer selection mode picker: All / By layer / Selection. The
+  layer tree pulls from the active Rhino doc with the same
+  hierarchy display the May 20 build used.
+- Send button drives the full `RhinoSendPipeline`: meshing, PBR
+  material extraction, texture blob upload, layer collection
+  hierarchy, named views, and a real Speckle/ORBIT version commit
+  posted to the chosen model.
+- Live progress + status reporting back to the panel; result URL
+  exposes an "Open in ORBIT" link that uses the host's default
+  browser via `Process.Start(url, UseShellExecute=true)`.
+- Footer-driven update check works the same as v0.1.2: surfaces
+  the latest GitHub release, asks whether to open the releases
+  page, degrades gracefully if the host is offline / GitHub is
+  rate-limited / response can't be parsed.
+
+### Migration
+
+Users on v0.1.6 / v0.1.7 should:
+
+1. Open **Add/Remove Programs**, find `ORBIT Connector for Rhino`,
+   click **Uninstall**.
+2. Close Rhino.
+3. Run `OrbitConnector-Rhino-Setup-v0.1.8.exe`. The installer places
+   files at `%LOCALAPPDATA%\Programs\OrbitConnector\Rhino\0.1.8\`,
+   refreshes the HKCU plug-in registry entry, and clears any stale
+   `LoadProtection` marker carried over from a prior broken install.
+4. Start Rhino. The footer reads `v0.1.8`, `+ Send` and `+ Receive`
+   open the real card config (project / model / layer pickers — not
+   a "coming soon" message box), and a successful send produces a
+   real ORBIT version commit.
+5. If the panel ever again degrades to a blank surface, paste the
+   tail of `%LOCALAPPDATA%\OrbitConnector\load.log` into a GitHub
+   issue.
+
+The plug-in registry GUID is unchanged from v0.1.3
+(`4F3A2B1C-8E5D-4A9F-B6C2-1D7E3F4A5B6C`), so an in-place upgrade also
+works — but a clean uninstall + reinstall avoids any leftover state
+from the v0.1.0-v0.1.7 broken-load loop.
+
 ## v0.1.7 — Rhino plug-in actually loads now (installer registry + System.Drawing metadata)
 
 **v0.1.6 still threw "initialization failed" on Rhino startup despite the

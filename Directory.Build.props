@@ -35,14 +35,33 @@
     installers/rhino/build-yak.ps1 / build-mac.sh).
   -->
   <PropertyGroup>
-    <!-- SDK source switch -->
-    <!-- Uncomment to force local SDK project references: -->
-    <!-- <OrbitSdkLocal>true</OrbitSdkLocal> -->
-    <OrbitSdkLocal Condition="'$(ORBIT_SDK_LOCAL)' == '1'">true</OrbitSdkLocal>
-    <OrbitSdkPath Condition="'$(OrbitSdkPath)' == ''">$(MSBuildThisFileDirectory)..\SDK\src</OrbitSdkPath>
+    <!--
+      SDK source switch.
+
+      v0.1.8 changes the default to use the vendored SDK at
+      ./vendor/SDK/src. Background: orbit-sdk-repo on GitHub only
+      contains the initial scaffold; the May 20 SDK refactor that the
+      WebView panel + send pipeline depend on
+      (OrbitObject.CollectionType / LayerPath / LayerColor / Views,
+      BuiltElements/View3D, Geometry/Vector) was committed locally in
+      the parent ORBIT meta-repo but never pushed to orbit-sdk. Cloning
+      orbit-sdk in CI therefore yields an SDK that's missing the
+      types the connector references, and the build fails before any
+      assemblies are produced.
+
+      Vendoring the May 20 SDK keeps orbit-connectors self-contained:
+      a clean clone builds without needing ORBIT_SDK_LOCAL=1 and
+      without needing the orbit-sdk repo cloned alongside. To opt back
+      into a sibling SDK clone (for active SDK development), pass
+      `-p:OrbitSdkPath=<absolute-path-to-SDK/src>` on the dotnet
+      command line, or set `ORBIT_SDK_LOCAL=0` and switch to the
+      NuGet PackageReference path.
+    -->
+    <OrbitSdkLocal Condition="'$(OrbitSdkLocal)' == ''">true</OrbitSdkLocal>
+    <OrbitSdkPath Condition="'$(OrbitSdkPath)' == ''">$(MSBuildThisFileDirectory)vendor\SDK\src</OrbitSdkPath>
 
     <!-- Lockstep version. CI overrides via -p:OrbitConnectorVersion=$VERSION. -->
-    <OrbitConnectorVersion Condition="'$(OrbitConnectorVersion)' == ''">0.1.7</OrbitConnectorVersion>
+    <OrbitConnectorVersion Condition="'$(OrbitConnectorVersion)' == ''">0.1.8</OrbitConnectorVersion>
     <Version>$(OrbitConnectorVersion)</Version>
     <AssemblyVersion>$(OrbitConnectorVersion).0</AssemblyVersion>
     <FileVersion>$(OrbitConnectorVersion).0</FileVersion>

@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>ORBIT Connector</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:          #141414;
+    --bg2:         #1e1e1e;
+    --bg3:         #252525;
+    --bg4:         #2c2c2c;
+    --border:      #2e2e2e;
+    --accent:      #E06238;
+    --accent-hover:#f0724a;
+    --recv:        #3b82f6;
+    --recv-hover:  #5b9bff;
+    --green:       #4caf74;
+    --red:         #e05252;
+    --text:        #e8e8e8;
+    --text2:       #9a9a9a;
+    --text3:       #555;
+    --radius:      10px;
+    --font:        -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;overflow-x:hidden}
+  body{display:flex;flex-direction:column;height:100%}
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-track{background:var(--bg)}
+  ::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:2px}
+
+  /* ── Header ── */
+  #header{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:12px 14px 10px;
+    border-bottom:1px solid var(--border);
+    flex-shrink:0;
+  }
+  #wordmark{font-size:14px;font-weight:700;color:var(--accent);letter-spacing:.05em}
+  #header-sub{font-size:10px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase;margin-top:1px}
+  #header-right{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+  #version-label{font-size:11px;color:var(--text3);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+  #btn-check-updates{
+    background:none;border:none;padding:0;margin:0;cursor:pointer;
+    font-family:var(--font);font-size:10px;color:#66B2FF;
+    text-decoration:none;letter-spacing:.04em;
+  }
+  #btn-check-updates:hover{text-decoration:underline}
+  #btn-check-updates:disabled{opacity:.5;cursor:default;text-decoration:none}
+
+  /* ── Buttons ── */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:5px;
+    border:none;border-radius:6px;cursor:pointer;font-family:var(--font);
+    font-size:12px;font-weight:600;letter-spacing:.04em;
+    transition:background .15s,opacity .15s;white-space:nowrap;
+  }
+  .btn:disabled{opacity:.4;cursor:default}
+  .btn-primary{background:var(--accent);color:#fff;padding:0 18px;height:34px}
+  .btn-primary:not(:disabled):hover{background:var(--accent-hover)}
+  .btn-recv{background:var(--recv);color:#fff;padding:0 18px;height:34px}
+  .btn-recv:not(:disabled):hover{background:var(--recv-hover)}
+  .btn-ghost{background:var(--bg4);color:var(--text2);padding:0 12px;height:28px;font-size:11px}
+  .btn-ghost:not(:disabled):hover{background:#363636;color:var(--text)}
+  .btn-link{background:none;color:var(--accent);padding:0;height:auto;font-size:12px;text-decoration:underline;text-decoration-color:transparent}
+  .btn-link:hover{text-decoration-color:var(--accent)}
+  .btn-icon{background:none;color:var(--text3);padding:0;width:22px;height:22px;font-size:14px;border-radius:4px}
+  .btn-icon:hover{background:var(--bg3);color:var(--text2)}
+  .btn-sm{height:26px;padding:0 10px;font-size:11px;border-radius:5px}
+
+  /* ── Pages ── */
+  .page{display:none;flex-direction:column;flex:1;overflow:hidden}
+  .page.active{display:flex}
+
+  /* ── Login page ── */
+  #page-login{padding:20px 16px;gap:14px;overflow-y:auto}
+  .field-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
+  .input{
+    width:100%;background:var(--bg3);border:1px solid var(--border);
+    border-radius:6px;color:var(--text);font-family:var(--font);
+    font-size:13px;padding:8px 10px;outline:none;
+    transition:border-color .15s;
+  }
+  .input:focus{border-color:var(--accent)}
+  .input::placeholder{color:var(--text3)}
+  .login-section{display:flex;flex-direction:column;gap:6px}
+  #login-error{color:var(--red);font-size:12px;display:none}
+  #login-spinner{display:none;align-items:center;gap:8px;color:var(--text2);font-size:12px}
+  .spinner{width:14px;height:14px;border:2px solid var(--bg4);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .divider{display:flex;align-items:center;gap:10px;color:var(--text3);font-size:11px}
+  .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+
+  /* ── Main page ── */
+  #page-main{overflow:hidden}
+  #account-bar{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
+  }
+  #account-name{font-size:12px;font-weight:600;color:var(--text)}
+  #account-server{font-size:11px;color:var(--text3);margin-top:1px}
+  #action-bar{
+    display:flex;gap:8px;padding:10px 14px;
+    border-bottom:1px solid var(--border);flex-shrink:0;
+  }
+  #card-list{flex:1;overflow-y:auto}
+  #empty-state{padding:28px 16px;text-align:center;color:var(--text3)}
+  #empty-state p{line-height:1.5}
+
+  /* ── Card ── */
+  .card{border-bottom:1px solid var(--border)}
+  .card-header{
+    display:flex;align-items:center;gap:0;
+    padding:10px 12px 10px 14px;cursor:pointer;
+    transition:background .1s;
+    user-select:none;
+  }
+  .card-header:hover{background:var(--bg2)}
+  .card-type-dot{
+    width:3px;height:36px;border-radius:2px;flex-shrink:0;margin-right:10px;
+  }
+  .card-type-dot.send{background:var(--accent)}
+  .card-type-dot.recv{background:var(--recv)}
+  .card-info{flex:1;min-width:0}
+  .card-title{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card-sub{font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .card-actions{display:flex;align-items:center;gap:6px;flex-shrink:0;margin-left:8px}
+  .card-ago{font-size:10px;color:var(--text3);flex-shrink:0;margin-right:6px}
+  .card-chevron{font-size:10px;color:var(--text3);transition:transform .15s;flex-shrink:0;width:12px;text-align:center}
+  .card.expanded .card-chevron{transform:rotate(180deg)}
+
+  /* ── Card body ── */
+  .card-body{display:none;border-top:1px solid var(--border)}
+  .card.expanded .card-body{display:block}
+  .cb-section{border-bottom:1px solid var(--border)}
+  .cb-section-header{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:6px 14px;background:var(--bg2);
+  }
+  .cb-section-label{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.12em}
+  .cb-section-actions{display:flex;gap:4px}
+  .cb-content{padding:10px 14px}
+  .select{
+    width:100%;background:var(--bg3);border:1px solid var(--border);
+    border-radius:6px;color:var(--text);font-family:var(--font);
+    font-size:12px;padding:7px 10px;outline:none;cursor:pointer;
+    appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 10px center;
+    padding-right:28px;
+  }
+  .select:focus{border-color:var(--accent)}
+  .inline-new{display:flex;gap:6px;margin-top:6px}
+  .inline-new .input{flex:1}
+
+  /* ── Layer list ── */
+  .layer-list{
+    max-height:160px;overflow-y:auto;background:var(--bg3);
+    border:1px solid var(--border);border-radius:6px;
+  }
+  .layer-row{
+    display:flex;align-items:center;gap:8px;padding:5px 8px;
+    border-bottom:1px solid var(--border);cursor:pointer;
+  }
+  .layer-row:last-child{border-bottom:none}
+  .layer-row:hover{background:var(--bg4)}
+  .layer-row input[type=checkbox]{accent-color:var(--accent);cursor:pointer;flex-shrink:0}
+  .layer-name{font-size:12px;color:var(--text2);user-select:none}
+  .layer-mode-row{display:flex;gap:14px;margin-bottom:8px}
+  .layer-mode-row label{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer}
+  .layer-mode-row input[type=radio]{accent-color:var(--accent);cursor:pointer}
+
+  /* ── Card footer ── */
+  .cb-footer{padding:12px 14px;border-top:1px solid var(--border)}
+  .cb-status{padding:6px 14px 0;font-size:11px;display:none}
+  .cb-status.show{display:block}
+  .cb-status.ok{color:var(--green)}
+  .cb-status.err{color:var(--red)}
+  .cb-status.info{color:var(--text2)}
+  .progress-bar{height:2px;background:var(--bg4);border-radius:1px;overflow:hidden;margin-top:6px;display:none}
+  .progress-bar.show{display:block}
+  .progress-fill{height:100%;background:var(--accent);border-radius:1px;transition:width .3s;width:0%}
+  .open-link{margin-top:8px;display:none}
+  .open-link.show{display:block}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div id="header">
+  <div>
+    <div id="wordmark">ORBIT</div>
+    <div id="header-sub">Connector</div>
+  </div>
+  <div id="header-right">
+    <span id="version-label">v—</span>
+    <button id="btn-check-updates" type="button" title="Check GitHub for a newer connector release">Check for updates</button>
+  </div>
+</div>
+
+<!-- Login page -->
+<div id="page-login" class="page active">
+  <div class="login-section">
+    <div class="field-label">Server</div>
+    <input id="server-url" class="input" type="url" value="https://orbit.rebus.industries" spellcheck="false"/>
+  </div>
+
+  <button class="btn btn-primary" id="btn-oauth" style="width:100%">Connect to ORBIT</button>
+
+  <div class="divider">or</div>
+
+  <div class="login-section">
+    <div class="field-label">Personal Access Token</div>
+    <input id="pat-input" class="input" type="password" placeholder="Paste token…" spellcheck="false"/>
+    <button class="btn btn-ghost btn-sm" id="btn-pat" style="align-self:flex-start">Use Token</button>
+  </div>
+
+  <div id="login-spinner"><div class="spinner"></div><span id="login-spinner-text">Connecting…</span></div>
+  <div id="login-error"></div>
+</div>
+
+<!-- Main page -->
+<div id="page-main" class="page">
+  <div id="account-bar">
+    <div>
+      <div id="account-name">—</div>
+      <div id="account-server">—</div>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="btn-logout">Sign out</button>
+  </div>
+  <div id="action-bar">
+    <button class="btn btn-primary btn-sm" id="btn-add-send">+ Send</button>
+    <button class="btn btn-recv btn-sm" id="btn-add-recv">+ Receive</button>
+  </div>
+  <div id="card-list">
+    <div id="empty-state">
+      <p>Use <strong>+ Send</strong> or <strong>+ Receive</strong><br>to get started.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+const state = {
+  user: null,
+  serverUrl: '',
+  cards: [],       // [{id,type,projectId,projectName,modelId,modelName,layerMode,includedLayers,lastSentAt,lastVersionId}]
+  projects: {},    // {cardId: [{id,name}]}
+  models: {},      // {cardId: [{id,name}]}
+  layers: [],      // [{fullPath,name,depth}] - from active Rhino doc
+  // Per-card transient UI state. Never cleared by onCards() so it
+  // survives every full renderCards() DOM rebuild — that's what keeps
+  // the project/model dropdowns populated, the upload progress visible,
+  // and the expanded/collapsed state correct when the user switches
+  // panel tabs in Rhino and comes back.
+  uiState: {},     // {cardId: {expanded, isProcessing, progressStatus, progressPercent, statusMsg, statusCls, resultUrl, newProjOpen, newProjName, newMdlOpen, newMdlName}}
+};
+function getCardUi(cardId) {
+  if (!state.uiState[cardId]) state.uiState[cardId] = { expanded: false };
+  return state.uiState[cardId];
+}
+
+// ── Bridge to C# ─────────────────────────────────────────────────────────────
+function sendToHost(action, data) {
+  const params = encodeURIComponent(JSON.stringify(data || {}));
+  try { window.location.href = `orbit://msg/${action}?d=${params}`; } catch(e) {}
+}
+
+// ── Called BY C# ─────────────────────────────────────────────────────────────
+window.orbitReceive = function(msg) {
+  const m = JSON.parse(msg);
+  switch (m.type) {
+    case 'version':      onVersion(m.version); break;
+    case 'updateCheck':  onUpdateCheck(m); break;
+    case 'loginOk':      onLoginOk(m); break;
+    case 'loginErr':     onLoginErr(m.message); break;
+    case 'projects':     onProjects(m.cardId, m.items); break;
+    case 'models':       onModels(m.cardId, m.items); break;
+    case 'layers':       onLayers(m.layers); break;
+    case 'sendProgress': onProgress(m.cardId, m.status, m.percent); break;
+    case 'sendOk':       onSendOk(m.cardId, m.versionId, m.url); break;
+    case 'sendErr':           onSendErr(m.cardId, m.message); break;
+    case 'selectionCaptured': window._selectionCaptured?.(m.cardId, m.count); break;
+    case 'cards':        onCards(m.items); break;
+    case 'logout':       onLogout(); break;
+  }
+};
+
+// ── Version + update check (v0.1.2 / restored in v0.1.8) ───────────────────
+function onVersion(version) {
+  const lbl = document.getElementById('version-label');
+  if (lbl) lbl.textContent = 'v' + (version || 'dev');
+}
+
+document.getElementById('btn-check-updates').onclick = () => {
+  const btn = document.getElementById('btn-check-updates');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  sendToHost('checkUpdates', {});
+};
+
+function onUpdateCheck(m) {
+  const btn = document.getElementById('btn-check-updates');
+  if (btn) { btn.disabled = false; btn.textContent = 'Check for updates'; }
+  if (!m) return;
+  if (m.kind === 'uptodate') {
+    alert("You're up to date. Running v" + (m.current || 'dev') + '.');
+  } else if (m.kind === 'newer') {
+    const want = confirm(
+      'ORBIT Connector v' + m.latest +
+      ' is available. You\'re running v' + (m.current || 'dev') + '.\n\n' +
+      'Open the releases page to download?'
+    );
+    if (want && m.url) sendToHost('openUrl', { url: m.url });
+  } else {
+    alert("Couldn't check for updates: " + (m.message || 'unknown error') + '. Try again later.');
+  }
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+document.getElementById('btn-oauth').onclick = () => {
+  const url = document.getElementById('server-url').value.trim();
+  if (!url) return;
+  setLoginBusy('Opening browser…');
+  sendToHost('login', { url, method: 'oauth' });
+};
+
+document.getElementById('btn-pat').onclick = () => {
+  const url = document.getElementById('server-url').value.trim();
+  const pat = document.getElementById('pat-input').value.trim();
+  if (!url || !pat) return;
+  setLoginBusy('Validating token…');
+  sendToHost('login', { url, method: 'pat', token: pat });
+};
+
+document.getElementById('btn-logout').onclick = () => {
+  sendToHost('logout', {});
+};
+
+function setLoginBusy(msg) {
+  document.getElementById('login-spinner-text').textContent = msg;
+  document.getElementById('login-spinner').style.display = 'flex';
+  document.getElementById('login-error').style.display = 'none';
+  document.getElementById('btn-oauth').disabled = true;
+  document.getElementById('btn-pat').disabled = true;
+}
+
+function setLoginIdle() {
+  document.getElementById('login-spinner').style.display = 'none';
+  document.getElementById('btn-oauth').disabled = false;
+  document.getElementById('btn-pat').disabled = false;
+}
+
+function onLoginErr(msg) {
+  setLoginIdle();
+  const el = document.getElementById('login-error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function onLoginOk(m) {
+  state.user = { name: m.name, email: m.email };
+  state.serverUrl = m.serverUrl;
+  setLoginIdle();
+  document.getElementById('account-name').textContent = m.name || m.email || 'User';
+  document.getElementById('account-server').textContent = m.serverUrl;
+  showPage('main');
+}
+
+function onLogout() {
+  state.user = null; state.serverUrl = '';
+  state.cards = []; state.projects = {}; state.models = {};
+  renderCards();
+  showPage('login');
+}
+
+// ── Cards ─────────────────────────────────────────────────────────────────────
+function onCards(items) {
+  // Normalise type to lowercase so all comparisons are consistent
+  state.cards = (items || []).map(c => ({ ...c, type: String(c.type).toLowerCase() }));
+  renderCards();
+}
+
+document.getElementById('btn-add-send').onclick = () => sendToHost('addCard', { type: 'send' });
+document.getElementById('btn-add-recv').onclick = () => sendToHost('addCard', { type: 'receive' });
+
+function renderCards() {
+  const list = document.getElementById('card-list');
+  const empty = document.getElementById('empty-state');
+  list.innerHTML = '';
+  list.appendChild(empty);
+  if (state.cards.length === 0) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  state.cards.forEach(card => list.appendChild(buildCard(card)));
+}
+
+function buildCard(card) {
+  const isSend = card.type === 'send';
+  const ui = getCardUi(card.id);
+  const wrap = document.createElement('div');
+  wrap.className = 'card' + (ui.expanded ? ' expanded' : '');
+  wrap.id = 'card-' + card.id;
+
+  const ago = card.lastSentAt ? timeAgo(card.lastSentAt) : '';
+
+  wrap.innerHTML = `
+  <div class="card-header" onclick="toggleCard('${card.id}')">
+    <div class="card-type-dot ${isSend ? 'send' : 'recv'}"></div>
+    <div class="card-info">
+      <div class="card-title">${esc(card.projectName || (isSend ? 'New send' : 'New receive'))}</div>
+      <div class="card-sub">${esc(card.modelName || 'No model selected')}</div>
+    </div>
+    <div class="card-actions">
+      ${ago ? `<span class="card-ago">${ago}</span>` : ''}
+      <button class="btn ${isSend ? 'btn-primary' : 'btn-recv'} btn-sm"
+        onclick="event.stopPropagation();doAction('${card.id}')"
+      >${isSend ? 'Send' : 'Receive'}</button>
+      <button class="btn btn-icon" onclick="event.stopPropagation();removeCard('${card.id}')" title="Remove">×</button>
+      <span class="card-chevron">▼</span>
+    </div>
+  </div>
+  <div class="card-body">
+    ${buildCardBody(card)}
+  </div>`;
+
+  // bind after insertion
+  setTimeout(() => bindCard(card, wrap), 0);
+  return wrap;
+}
+
+function buildCardBody(card) {
+  const isSend = card.type === 'send';
+  return `
+  <div class="cb-section">
+    <div class="cb-section-header">
+      <span class="cb-section-label">Project</span>
+      <div class="cb-section-actions">
+        <button class="btn btn-icon" onclick="refreshProjects('${card.id}')" title="Refresh">↻</button>
+        <button class="btn btn-icon" onclick="toggleNewProj('${card.id}')" title="New project">+</button>
+      </div>
+    </div>
+    <div class="cb-content">
+      <select class="select" id="proj-${card.id}" onchange="onProjChange('${card.id}')">
+        <option value="">Loading…</option>
+      </select>
+      <div id="new-proj-${card.id}" class="inline-new" style="display:none">
+        <input class="input" id="new-proj-name-${card.id}" placeholder="Project name" style="font-size:12px"/>
+        <button class="btn btn-primary btn-sm" onclick="createProject('${card.id}')">Create</button>
+        <button class="btn btn-icon" onclick="toggleNewProj('${card.id}')">×</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="cb-section">
+    <div class="cb-section-header">
+      <span class="cb-section-label">Model</span>
+      <div class="cb-section-actions">
+        <button class="btn btn-icon" onclick="refreshModels('${card.id}')" title="Refresh">↻</button>
+        <button class="btn btn-icon" onclick="toggleNewModel('${card.id}')" title="New model">+</button>
+      </div>
+    </div>
+    <div class="cb-content">
+      <select class="select" id="mdl-${card.id}" onchange="onMdlChange('${card.id}')">
+        <option value="">Select a project first</option>
+      </select>
+      <div id="new-mdl-${card.id}" class="inline-new" style="display:none">
+        <input class="input" id="new-mdl-name-${card.id}" placeholder="Model name" style="font-size:12px"/>
+        <button class="btn btn-icon" onclick="toggleNewModel('${card.id}')">×</button>
+      </div>
+    </div>
+  </div>
+
+  ${card.type === 'send' ? buildLayerSection(card) : ''}
+
+  <div class="cb-footer">
+    <button class="btn ${isSend ? 'btn-primary' : 'btn-recv'}" style="width:100%"
+      id="action-btn-${card.id}" onclick="doAction('${card.id}')"
+    >${isSend ? 'Send to ORBIT' : 'Receive from ORBIT'}</button>
+  </div>
+  <div class="progress-bar" id="prog-bar-${card.id}"><div class="progress-fill" id="prog-fill-${card.id}"></div></div>
+  <div class="cb-status" id="status-${card.id}"></div>
+  <div class="open-link" id="open-link-${card.id}">
+    <button class="btn btn-link btn-sm" onclick="openResult('${card.id}')">↗ Open in ORBIT</button>
+  </div>`;
+}
+
+function buildLayerSection(card) {
+  const layers = state.layers || [];
+  const mode = card.layerMode || 'all';
+  const included = card.includedLayers || [];
+  return `
+  <div class="cb-section">
+    <div class="cb-section-header">
+      <span class="cb-section-label">Layers</span>
+      <div class="cb-section-actions">
+        <button class="btn btn-ghost btn-sm" onclick="selectAllLayers('${card.id}',true)">All</button>
+        <button class="btn btn-ghost btn-sm" onclick="selectAllLayers('${card.id}',false)">None</button>
+      </div>
+    </div>
+    <div class="cb-content">
+      <div class="layer-mode-row">
+        <label><input type="radio" name="lm-${card.id}" value="all" ${mode==='all'?'checked':''} onchange="onLayerModeChange('${card.id}','all')"> All</label>
+        <label><input type="radio" name="lm-${card.id}" value="bylayer" ${mode==='bylayer'?'checked':''} onchange="onLayerModeChange('${card.id}','bylayer')"> By layer</label>
+        <label><input type="radio" name="lm-${card.id}" value="selection" ${mode==='selection'?'checked':''} onchange="onLayerModeChange('${card.id}','selection')"> Selection</label>
+      </div>
+      <div id="capture-row-${card.id}" style="${mode==='selection'?'':'display:none'};margin-top:6px;display:${mode==='selection'?'flex':'none'};gap:8px;align-items:center">
+        <button class="btn btn-ghost btn-sm" onclick="captureSelection('${card.id}')">📌 Capture current selection</button>
+        <span id="capture-count-${card.id}" style="font-size:11px;color:var(--text3)">${(card.selectedObjectIds||[]).length > 0 ? (card.selectedObjectIds.length)+' objects' : 'None captured'}</span>
+      </div>
+      <div id="layer-list-${card.id}" style="${mode==='bylayer'?'':'display:none'}">
+        <div class="layer-list" id="layers-${card.id}">
+          ${layers.map(l => `
+          <div class="layer-row" style="padding-left:${8+l.depth*12}px">
+            <input type="checkbox" data-path="${esc(l.fullPath)}" ${included.includes(l.fullPath)||mode==='all'?'checked':''}
+              onchange="onLayerCheck('${card.id}',this)"/>
+            <span class="layer-name">${esc(l.name)}</span>
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindCard(card) {
+  const ui = getCardUi(card.id);
+
+  // Project dropdown: use cached list if we have it, otherwise auto-fetch
+  // so the user's previously-selected project shows up again on its own
+  // after a renderCards() DOM rebuild.
+  if (state.projects[card.id]) {
+    populateProjCombo(card.id, state.projects[card.id], card.projectId);
+  } else if (card.projectId || ui.expanded) {
+    sendToHost('getProjects', { cardId: card.id });
+  }
+
+  // Model dropdown: same idea. If we have a projectId but no cached
+  // models, fetch — onModels will then re-select card.modelId.
+  if (state.models[card.id]) {
+    populateMdlCombo(card.id, state.models[card.id], card.modelId);
+  } else if (card.projectId) {
+    sendToHost('getModels', { cardId: card.id, projectId: card.projectId });
+  }
+
+  // Re-apply transient UI state that the DOM rebuild just blew away.
+  if (ui.newProjOpen) {
+    const el = document.getElementById('new-proj-' + card.id);
+    if (el) el.style.display = 'flex';
+    const inp = document.getElementById('new-proj-name-' + card.id);
+    if (inp && ui.newProjName) inp.value = ui.newProjName;
+  }
+  if (ui.newMdlOpen) {
+    const el = document.getElementById('new-mdl-' + card.id);
+    if (el) el.style.display = 'flex';
+    const inp = document.getElementById('new-mdl-name-' + card.id);
+    if (inp && ui.newMdlName) inp.value = ui.newMdlName;
+  }
+  if (ui.isProcessing) {
+    showProgress(card.id, ui.progressStatus || '', ui.progressPercent || 0, /*persist*/ false);
+    const btn = document.getElementById('action-btn-' + card.id);
+    if (btn) btn.disabled = true;
+  }
+  if (ui.statusMsg) {
+    showStatus(card.id, ui.statusMsg, ui.statusCls || 'info', /*persist*/ false);
+  }
+  if (ui.resultUrl) {
+    const link = document.getElementById('open-link-' + card.id);
+    if (link) { link.dataset.url = ui.resultUrl; link.classList.add('show'); }
+  }
+}
+
+// ── Card interactions ─────────────────────────────────────────────────────────
+function toggleCard(cardId) {
+  const el = document.getElementById('card-' + cardId);
+  const expanded = el.classList.toggle('expanded');
+  getCardUi(cardId).expanded = expanded;
+  if (expanded) {
+    const card = state.cards.find(c => c.id === cardId);
+    if (card && !state.projects[cardId]) refreshProjects(cardId);
+    sendToHost('requestLayers', {});
+  }
+}
+
+function removeCard(cardId) {
+  sendToHost('removeCard', { id: cardId });
+}
+
+function doAction(cardId) {
+  const card = state.cards.find(c => c.id === cardId);
+  if (!card) return;
+  const projSel = document.getElementById('proj-' + cardId);
+  const mdlSel  = document.getElementById('mdl-' + cardId);
+  const newMdlEl = document.getElementById('new-mdl-name-' + cardId);
+  const mdlNewVisible = document.getElementById('new-mdl-' + cardId)?.style.display !== 'none';
+  const modelName = mdlNewVisible && newMdlEl?.value.trim() ? newMdlEl.value.trim() : null;
+  const projId = projSel?.value;
+  const mdlId  = mdlSel?.value;
+  if (!projId) { showStatus(cardId, 'Select a project first.', 'err'); return; }
+  sendToHost(card.type === 'send' ? 'send' : 'receive', {
+    cardId, projId, mdlId: mdlId || null, newModelName: modelName
+  });
+  const btn = document.getElementById('action-btn-' + cardId);
+  if (btn) btn.disabled = true;
+  showProgress(cardId, card.type === 'send' ? 'Preparing…' : 'Fetching…', 0);
+}
+
+// ── Project / Model ───────────────────────────────────────────────────────────
+function refreshProjects(cardId) {
+  sendToHost('getProjects', { cardId });
+}
+function refreshModels(cardId) {
+  const sel = document.getElementById('proj-' + cardId);
+  if (sel && sel.value) sendToHost('getModels', { cardId, projectId: sel.value });
+}
+function onProjChange(cardId) {
+  const sel = document.getElementById('proj-' + cardId);
+  const projId = sel?.value;
+  if (!projId) return;
+  const card = state.cards.find(c => c.id === cardId);
+  if (card) {
+    const proj = (state.projects[cardId] || []).find(p => p.id === projId);
+    card.projectId = projId; card.projectName = proj?.name || '';
+    card.modelId = ''; card.modelName = '';
+    updateCardHeader(card);
+    sendToHost('updateCard', { card });
+    sendToHost('getModels', { cardId, projectId: projId });
+  }
+}
+function onMdlChange(cardId) {
+  const sel = document.getElementById('mdl-' + cardId);
+  const mdlId = sel?.value;
+  if (!mdlId) return;
+  const card = state.cards.find(c => c.id === cardId);
+  if (card) {
+    const mdl = (state.models[cardId] || []).find(m => m.id === mdlId);
+    card.modelId = mdlId; card.modelName = mdl?.name || '';
+    updateCardHeader(card);
+    sendToHost('updateCard', { card });
+  }
+}
+function onProjects(cardId, items) {
+  state.projects[cardId] = items;
+  const card = state.cards.find(c => c.id === cardId);
+  populateProjCombo(cardId, items, card?.projectId);
+}
+function onModels(cardId, items) {
+  state.models[cardId] = items;
+  const card = state.cards.find(c => c.id === cardId);
+  populateMdlCombo(cardId, items, card?.modelId);
+}
+function populateProjCombo(cardId, items, selectedId) {
+  const sel = document.getElementById('proj-' + cardId);
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Select project…</option>' +
+    items.map(p => `<option value="${p.id}" ${p.id===selectedId?'selected':''}>${esc(p.name)}</option>`).join('');
+}
+function populateMdlCombo(cardId, items, selectedId) {
+  const sel = document.getElementById('mdl-' + cardId);
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Select model…</option>' +
+    items.map(m => `<option value="${m.id}" ${m.id===selectedId?'selected':''}>${esc(m.name)}</option>`).join('');
+}
+function toggleNewProj(cardId) {
+  const el = document.getElementById('new-proj-' + cardId);
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+  if (el.style.display !== 'none') document.getElementById('new-proj-name-' + cardId)?.focus();
+}
+function toggleNewModel(cardId) {
+  const el = document.getElementById('new-mdl-' + cardId);
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+  if (el.style.display !== 'none') document.getElementById('new-mdl-name-' + cardId)?.focus();
+}
+function createProject(cardId) {
+  const name = document.getElementById('new-proj-name-' + cardId)?.value.trim();
+  if (!name) return;
+  sendToHost('createProject', { cardId, name });
+  toggleNewProj(cardId);
+}
+
+// ── Layers ────────────────────────────────────────────────────────────────────
+function onLayers(layers) {
+  state.layers = layers;
+  // refresh layer lists for expanded cards
+  state.cards.filter(c => c.type === 'send').forEach(c => {
+    const ll = document.getElementById('layer-list-' + c.id);
+    if (ll) {
+      const layerListEl = document.getElementById('layers-' + c.id);
+      if (layerListEl) {
+        layerListEl.innerHTML = layers.map(l => `
+        <div class="layer-row" style="padding-left:${8+l.depth*12}px">
+          <input type="checkbox" data-path="${esc(l.fullPath)}"
+            ${(c.includedLayers||[]).includes(l.fullPath)||c.layerMode==='all'?'checked':''}
+            onchange="onLayerCheck('${c.id}',this)"/>
+          <span class="layer-name">${esc(l.name)}</span>
+        </div>`).join('');
+      }
+    }
+  });
+}
+function onLayerModeChange(cardId, mode) {
+  const card = state.cards.find(c => c.id === cardId);
+  if (!card) return;
+  card.layerMode = mode;
+  const layerListEl = document.getElementById('layer-list-' + cardId);
+  if (layerListEl) layerListEl.style.display = mode === 'bylayer' ? '' : 'none';
+  const captureRow = document.getElementById('capture-row-' + cardId);
+  if (captureRow) captureRow.style.display = mode === 'selection' ? 'flex' : 'none';
+  sendToHost('updateCard', { card });
+}
+function captureSelection(cardId) {
+  sendToHost('captureSelection', { cardId });
+}
+window._selectionCaptured = function(cardId, count) {
+  const el = document.getElementById('capture-count-' + cardId);
+  if (el) el.textContent = count + ' object' + (count === 1 ? '' : 's') + ' captured';
+};
+function onLayerCheck(cardId, cb) {
+  const card = state.cards.find(c => c.id === cardId);
+  if (!card) return;
+  if (!card.includedLayers) card.includedLayers = [];
+  const path = cb.dataset.path;
+  if (cb.checked) { if (!card.includedLayers.includes(path)) card.includedLayers.push(path); }
+  else { card.includedLayers = card.includedLayers.filter(p => p !== path); }
+  sendToHost('updateCard', { card });
+}
+function selectAllLayers(cardId, all) {
+  const layerListEl = document.getElementById('layers-' + cardId);
+  if (!layerListEl) return;
+  layerListEl.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = all; });
+  const card = state.cards.find(c => c.id === cardId);
+  if (card) {
+    card.includedLayers = all ? state.layers.map(l => l.fullPath) : [];
+    sendToHost('updateCard', { card });
+  }
+}
+
+// ── Progress / Status ─────────────────────────────────────────────────────────
+function onProgress(cardId, status, percent) {
+  showProgress(cardId, status, percent);
+}
+function onSendOk(cardId, versionId, url) {
+  const card = state.cards.find(c => c.id === cardId);
+  if (card) { card.lastVersionId = versionId; card.lastSentAt = new Date().toISOString(); }
+  const ui = getCardUi(cardId);
+  ui.resultUrl = url || '';
+  hideProgress(cardId);
+  showStatus(cardId, '✓ Version created', 'ok');
+  const openLink = document.getElementById('open-link-' + cardId);
+  if (openLink) { openLink.dataset.url = url || ''; openLink.classList.add('show'); }
+  const btn = document.getElementById('action-btn-' + cardId);
+  if (btn) btn.disabled = false;
+  updateCardHeader(card);
+}
+function onSendErr(cardId, msg) {
+  hideProgress(cardId);
+  showStatus(cardId, msg, 'err');
+  const btn = document.getElementById('action-btn-' + cardId);
+  if (btn) btn.disabled = false;
+}
+// `persist=true` (the default) updates state.uiState so the progress
+// survives a renderCards() rebuild. bindCard() calls this with
+// persist=false when it's restoring previously-saved state — no need
+// to write the same values back to state in that case.
+function showProgress(cardId, status, percent, persist = true) {
+  if (persist) {
+    const ui = getCardUi(cardId);
+    ui.isProcessing = true;
+    ui.progressStatus = status;
+    ui.progressPercent = percent;
+  }
+  const bar  = document.getElementById('prog-bar-' + cardId);
+  const fill = document.getElementById('prog-fill-' + cardId);
+  const stat = document.getElementById('status-' + cardId);
+  if (bar)  { bar.classList.add('show'); }
+  if (fill) { fill.style.width = percent + '%'; }
+  if (stat) { stat.textContent = status; stat.className = 'cb-status show info'; }
+}
+function hideProgress(cardId) {
+  const ui = getCardUi(cardId);
+  ui.isProcessing = false;
+  ui.progressStatus = '';
+  ui.progressPercent = 0;
+  const bar = document.getElementById('prog-bar-' + cardId);
+  if (bar) bar.classList.remove('show');
+}
+function showStatus(cardId, msg, cls, persist = true) {
+  if (persist) {
+    const ui = getCardUi(cardId);
+    ui.statusMsg = msg;
+    ui.statusCls = cls;
+  }
+  const stat = document.getElementById('status-' + cardId);
+  if (stat) { stat.textContent = msg; stat.className = `cb-status show ${cls}`; }
+}
+function openResult(cardId) {
+  const link = document.getElementById('open-link-' + cardId);
+  const url = link?.dataset.url;
+  if (url) sendToHost('openUrl', { url });
+}
+function updateCardHeader(card) {
+  if (!card) return;
+  const el = document.getElementById('card-' + card.id);
+  if (!el) return;
+  const title = el.querySelector('.card-title');
+  const sub   = el.querySelector('.card-sub');
+  const ago   = el.querySelector('.card-ago');
+  if (title) title.textContent = card.projectName || (card.type==='send'?'New send':'New receive');
+  if (sub)   sub.textContent   = card.modelName   || 'No model selected';
+  if (ago && card.lastSentAt) ago.textContent = timeAgo(card.lastSentAt);
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function showPage(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+}
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function timeAgo(iso) {
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (d < 120)       return 'just now';
+  if (d < 3600)      return Math.floor(d/60) + 'm ago';
+  if (d < 86400)     return Math.floor(d/3600) + 'h ago';
+  return Math.floor(d/86400) + 'd ago';
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+sendToHost('ready', {});
+</script>
+</body>
+</html>
