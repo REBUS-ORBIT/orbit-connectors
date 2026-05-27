@@ -69,6 +69,19 @@ jobs:
           # Put it on PATH for the rest of the job.
           "$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_PATH -Append
 
+      - name: Prepare NuGet sources for CI
+        shell: pwsh
+        # nuget.config registers a local-orbit-sdk source at ../SDK/nupkgs
+        # which only exists in a sibling-clone dev layout. NuGet fails hard
+        # (NU1301) if a listed source path is missing, so we materialise the
+        # folder empty here. CI also doesn't need ORBIT_SDK_LOCAL: the csproj
+        # falls back to PackageReference for Orbit.Objects / Orbit.Sdk from
+        # the github-orbit feed (creds in nuget.config from $NUGET_TOKEN).
+        run: |
+          $sdkNupkgs = Join-Path (Split-Path -Parent $PWD) 'SDK\nupkgs'
+          New-Item -ItemType Directory -Force -Path $sdkNupkgs | Out-Null
+          Write-Host "Created empty $sdkNupkgs to satisfy nuget.config local source"
+
       - name: Restore + build YAK package
         shell: pwsh
         run: |
@@ -148,6 +161,15 @@ jobs:
           curl -fsSL "$url" -o "$dest"
           chmod +x "$dest"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Prepare NuGet sources for CI
+        # Same reason as the Windows job: nuget.config references ../SDK/nupkgs
+        # which only exists in a sibling-clone dev layout.
+        run: |
+          set -euo pipefail
+          sdk_nupkgs="$(dirname "$PWD")/SDK/nupkgs"
+          mkdir -p "$sdk_nupkgs"
+          echo "Created empty $sdk_nupkgs to satisfy nuget.config local source"
 
       - name: Build Mac YAK packages
         env:
