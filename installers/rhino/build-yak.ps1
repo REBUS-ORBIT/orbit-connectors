@@ -79,8 +79,11 @@ if (-not $Version) {
 Write-Host "Package version: $Version"
 
 # ---- Build ----
+# OrbitConnectorVersion is the single source of truth (Directory.Build.props);
+# the csproj inherits Version / AssemblyVersion / FileVersion / InformationalVersion
+# from it. See RELEASE_POLICY.md.
 Write-Host "`n>>> Building $Csproj ($Configuration)" -ForegroundColor Cyan
-& dotnet build $Csproj -c $Configuration -p:Version=$Version
+& dotnet build $Csproj -c $Configuration -p:OrbitConnectorVersion=$Version
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed (exit $LASTEXITCODE)" }
 
 $BinDir = Join-Path (Split-Path $Csproj -Parent) "bin\$Configuration\net8.0-windows"

@@ -11,6 +11,43 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.2 — Lockstep versioning + Rhino UI polish
+
+- **Lockstep versioning policy** — every connector now ships with the same
+  version stamp as the release tag, regardless of which connector's code
+  actually changed. Bumping the version is a release-pipeline action: push
+  `vX.Y.Z`, and CI builds + tags every connector with that version. See
+  [`RELEASE_POLICY.md`](RELEASE_POLICY.md) for the full rationale.
+- **Single source of truth** for the version: `OrbitConnectorVersion` in
+  the repo-root [`Directory.Build.props`](Directory.Build.props). The
+  Rhino csproj no longer hardcodes `<Version>` — it inherits from the
+  property. `installers/rhino/build-yak.ps1` and `build-mac.sh` now pass
+  `-p:OrbitConnectorVersion=$VERSION` to MSBuild, which flows into
+  `AssemblyVersion`, `FileVersion`, and `InformationalVersion` on the
+  produced `.rhp`. The YAK manifest and Inno Setup script keep getting
+  the same version through their existing `-Version` / `/DConnectorVersion`
+  parameters.
+- **Version label in the Rhino plugin UI** — the Orbit Eto panel footer
+  now reads `v<X.Y.Z>` in muted grey text, sourced at runtime from
+  `OrbitConnectorPlugin.Version`. Users can finally tell which build of
+  the connector they're running without digging into the YAK package
+  manager.
+- **ORBIT logo in the Rhino plugin UI** — the ORBIT brand image is now
+  embedded into the connector assembly (`Resources/orbit-logo.png`) and
+  rendered in the top-left of the panel next to the panel title. Adds
+  visual identity to the plug-in panel that previously had only a plain
+  text header.
+- **Rhino panel: "Check for updates" link** surfaces the latest GitHub
+  release (`https://api.github.com/repos/REBUS-ORBIT/orbit-connectors/releases/latest`)
+  and prompts the user to download. The link sits next to the version
+  label in the header; on click it disables itself, fetches the latest
+  release tag on a background thread with a 10s timeout, normalises both
+  tag and current version through `System.Version`, and shows one of
+  three message boxes: "up to date", "update available — open releases
+  page?", or "couldn't check for updates" with the underlying error.
+  Network failures (offline, GitHub rate-limited, timeout) degrade
+  gracefully and re-enable the link.
+
 ## v0.1.1 — Multi-connector release pipeline
 
 - Release naming standardised: each release is now "ORBIT Connectors v<X.Y.Z>"
