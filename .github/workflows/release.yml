@@ -69,26 +69,38 @@ jobs:
           # Put it on PATH for the rest of the job.
           "$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Prepare NuGet sources for CI
+      - name: Clone Orbit SDK (private sibling repo)
         shell: pwsh
-        # nuget.config registers a local-orbit-sdk source at ../SDK/nupkgs
-        # which only exists in a sibling-clone dev layout. NuGet fails hard
-        # (NU1301) if a listed source path is missing, so we materialise the
-        # folder empty here. CI also doesn't need ORBIT_SDK_LOCAL: the csproj
-        # falls back to PackageReference for Orbit.Objects / Orbit.Sdk from
-        # the github-orbit feed (creds in nuget.config from $NUGET_TOKEN).
+        # The csproj resolves Orbit.Objects / Orbit.Sdk via PackageReference
+        # against the github-orbit feed by default, but no public NuGet
+        # publish flow exists yet. Sidestep by cloning REBUS-ORBIT/orbit-sdk
+        # alongside the checkout at ../SDK/ and flipping ORBIT_SDK_LOCAL=1 so
+        # Directory.Build.props swaps in ProjectReferences. NUGET_TOKEN is
+        # the CheekiSkrub admin PAT with `repo` scope -- same token used for
+        # the github-orbit NuGet feed.
         run: |
-          $sdkNupkgs = Join-Path (Split-Path -Parent $PWD) 'SDK\nupkgs'
-          New-Item -ItemType Directory -Force -Path $sdkNupkgs | Out-Null
-          Write-Host "Created empty $sdkNupkgs to satisfy nuget.config local source"
+          $sdkParent = Split-Path -Parent $PWD
+          $sdkDir    = Join-Path $sdkParent 'SDK'
+          if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
+          $token = "${{ secrets.NUGET_TOKEN }}"
+          if (-not $token) { throw "secrets.NUGET_TOKEN is required to clone the private orbit-sdk repo" }
+          git clone --depth 1 "https://x-access-token:$token@github.com/REBUS-ORBIT/orbit-sdk.git" $sdkDir
+          # nuget.config also references ../SDK/nupkgs as a local source; create
+          # the folder empty so NuGet doesn't fail with NU1301.
+          New-Item -ItemType Directory -Force -Path (Join-Path $sdkDir 'nupkgs') | Out-Null
+          Write-Host "Cloned orbit-sdk to $sdkDir"
 
       - name: Restore + build YAK package
+        env:
+          ORBIT_SDK_LOCAL: '1'
         shell: pwsh
         run: |
           $v = "${{ steps.version.outputs.value }}"
           .\installers\rhino\build-yak.ps1 -Version $v -RhinoTargets rh8
 
       - name: Build Inno Setup .exe
+        env:
+          ORBIT_SDK_LOCAL: '1'
         shell: pwsh
         run: |
           $v = "${{ steps.version.outputs.value }}"
@@ -162,18 +174,27 @@ jobs:
           chmod +x "$dest"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
-      - name: Prepare NuGet sources for CI
-        # Same reason as the Windows job: nuget.config references ../SDK/nupkgs
-        # which only exists in a sibling-clone dev layout.
+      - name: Clone Orbit SDK (private sibling repo)
+        # Same reason as the Windows job: csproj needs the SDK source locally
+        # because the SDK isn't published as a NuGet package yet.
+        env:
+          NUGET_TOKEN: ${{ secrets.NUGET_TOKEN }}
         run: |
           set -euo pipefail
-          sdk_nupkgs="$(dirname "$PWD")/SDK/nupkgs"
-          mkdir -p "$sdk_nupkgs"
-          echo "Created empty $sdk_nupkgs to satisfy nuget.config local source"
+          sdk_dir="$(dirname "$PWD")/SDK"
+          rm -rf "$sdk_dir"
+          if [[ -z "${NUGET_TOKEN:-}" ]]; then
+            echo "secrets.NUGET_TOKEN is required to clone the private orbit-sdk repo" >&2
+            exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${NUGET_TOKEN}@github.com/REBUS-ORBIT/orbit-sdk.git" "$sdk_dir"
+          mkdir -p "$sdk_dir/nupkgs"
+          echo "Cloned orbit-sdk to $sdk_dir"
 
       - name: Build Mac YAK packages
         env:
           VERSION: ${{ needs.build-windows.outputs.version }}
+          ORBIT_SDK_LOCAL: '1'
         run: |
           chmod +x installers/rhino/build-mac.sh
           installers/rhino/build-mac.sh "$VERSION"
