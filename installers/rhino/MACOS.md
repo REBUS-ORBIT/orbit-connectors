@@ -84,6 +84,12 @@ package.
 ## TODO
 
 - [ ] Split csproj into Core / Windows / Mac as described above.
+- [ ] Confirm the correct macOS YAK CLI download URL. The v0.1.0 release
+      pipeline tried `https://files.mcneel.com/yak/tools/latest/yak` and
+      got HTTP 404, so `build-macos` failed before reaching `build-mac.sh`.
+      McNeel may only ship YAK bundled inside Rhino for Mac (so the right
+      path is to pull `yak` out of `/Applications/Rhino 8.app/Contents/
+      Resources/bin/yak`), or there may be a different release URL.
 - [ ] Re-run `build-mac.sh` on `macos-latest` and confirm both arm64 and x64
       `.yak` files are produced.
 - [ ] Load the YAK on a real Rhino 8 Mac install and validate the panel and
