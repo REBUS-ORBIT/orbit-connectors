@@ -28,7 +28,7 @@
 ; Do not regenerate this GUID.
 ;
 ; -----------------------------------------------------------------------------
-; v0.1.4 INSTALLER PATH HOTFIX
+; v0.1.4 INSTALLER PATH HOTFIX  (refined in v0.1.5 -- see below)
 ; -----------------------------------------------------------------------------
 ; Earlier v0.1.x installers (0.1.0 - 0.1.3) wrote the payload to
 ;   %APPDATA%\McNeel\Rhinoceros\packages\8.0\OrbitConnector\<version>\
@@ -49,6 +49,30 @@
 ; full path, so auto-load on startup keeps working as designed in v0.1.3.
 ; A post-install [Code] hook also tidies up any orphan v0.1.x folder still
 ; sitting in the YAK-managed dir from a prior install.
+;
+; -----------------------------------------------------------------------------
+; v0.1.5 ADDENDUM
+; -----------------------------------------------------------------------------
+; v0.1.4 had one missing piece: when Inno Setup detects a previous install
+; with the same AppId, by default it re-uses that install's location instead
+; of the .iss script's DefaultDirName. So a user upgrading 0.1.3 -> 0.1.4 in
+; place ended up with the new payload still being written to the OLD
+; YAK-managed dir (because Inno read the InstallLocation value from the
+; v0.1.3 uninstall registry key). Then the post-install cleanup hook
+; DelTree'd the parent, wiping the brand-new install.
+;
+; Two changes in v0.1.5 close that gap:
+;
+;   1. UsePreviousAppDir=no in [Setup] -- always honour DefaultDirName,
+;      regardless of whatever directory a previous install left behind.
+;   2. PrivilegesRequiredOverridesAllowed=dialog removed -- prevents the
+;      installer from auto-elevating into HKLM/ProgramData when a previous
+;      admin install of the same AppId is detected on the machine. With
+;      PrivilegesRequired=lowest as the only directive, every install is
+;      a per-user install, full stop.
+;   3. Safety belt in CleanupOrphanYakDir -- if {app} is somehow inside
+;      the YAK-managed dir tree, abort cleanup. (Should never trigger with
+;      UsePreviousAppDir=no in place; defensive against future regressions.)
 ; -----------------------------------------------------------------------------
 
 #define AppName       "ORBIT Connector for Rhino"
@@ -92,9 +116,18 @@ DefaultGroupName=ORBIT
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 AllowNoIcons=yes
+; Critical for the v0.1.x path migration: honour DefaultDirName above
+; instead of any InstallLocation value left over from a previous install
+; (which on an in-place 0.1.3 -> 0.1.4 upgrade would point right back at
+; the YAK-managed dir we are trying to escape).
+UsePreviousAppDir=no
 ; Per-user install: writes only to %APPDATA% + %LOCALAPPDATA%, no admin needed.
+; PrivilegesRequiredOverridesAllowed is intentionally NOT set: when a
+; previous admin install of the same AppId is on the machine, leaving the
+; override allowed causes Inno to silently elevate (HKLM uninstall key,
+; ProgramData Start Menu) to keep the upgrade consistent with the previous
+; admin install. We don't want that -- every install is per-user.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64
 ArchitecturesAllowed=x64
 LicenseFile={#LicenseFile}
@@ -225,9 +258,11 @@ end;
 // We DO NOT publish this connector through McNeel's YAK package registry,
 // so the only way that directory exists on the user's machine is leftover
 // from an earlier (broken) Inno install. Even so, we belt-and-brace it:
-//   1. Skip cleanup if Rhino is currently running (file locks would fail
+//   1. Skip cleanup if {app} is somehow inside the YAK-managed dir tree
+//      (defensive: should never trigger with UsePreviousAppDir=no).
+//   2. Skip cleanup if Rhino is currently running (file locks would fail
 //      the delete and the user would think the new install was broken).
-//   2. Use Inno's built-in DelTree which already silently no-ops on
+//   3. Use Inno's built-in DelTree which already silently no-ops on
 //      missing paths, so the cleanup runs harmlessly on a fresh machine.
 // ---------------------------------------------------------------------------
 
@@ -275,13 +310,30 @@ end;
 
 procedure CleanupOrphanYakDir();
 var
-  YakDir: String;
+  YakDir:    String;
+  YakLower:  String;
+  AppLower:  String;
 begin
   YakDir := GetOrphanYakDir();
 
   if not DirExists(YakDir) then
   begin
     Log('CleanupOrphanYakDir: no orphan dir at ' + YakDir + ' (clean machine).');
+    Exit;
+  end;
+
+  // Safety belt (v0.1.5): never delete the YAK-managed dir if {app} is
+  // inside it. With UsePreviousAppDir=no in [Setup], {app} is always
+  // %LOCALAPPDATA%\Programs\OrbitConnector\Rhino\<v>\, so this guard
+  // should never fire -- it exists to protect against a future regression
+  // re-introducing the v0.1.4 self-destruct.
+  YakLower := Lowercase(AddBackslash(YakDir));
+  AppLower := Lowercase(AddBackslash(ExpandConstant('{app}')));
+  if Pos(YakLower, AppLower) = 1 then
+  begin
+    Log('CleanupOrphanYakDir: {app} (' + ExpandConstant('{app}') +
+        ') is inside YakDir (' + YakDir + ') -- aborting cleanup to avoid' +
+        ' deleting the just-installed payload.');
     Exit;
   end;
 

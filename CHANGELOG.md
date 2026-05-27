@@ -11,6 +11,54 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.5 — Installer hotfix follow-up (force new install path on upgrade)
+
+**Do not use v0.1.4.** It shipped with one missing piece that caused an
+in-place upgrade from v0.1.3 to silently re-write all the new payload back
+into the OLD YAK-managed directory before the cleanup hook then DelTree'd
+the parent and wiped the install. v0.1.5 fixes this; use it directly.
+
+The bug: Inno Setup, by default, when it detects a previous install with
+the same `AppId`, uses that install's `InstallLocation` as `{app}` and
+ignores the script's `DefaultDirName`. So a v0.1.4 install on a machine
+that previously had v0.1.3 ended up with `{app}` set to
+`%APPDATA%\McNeel\Rhinoceros\packages\8.0\OrbitConnector\0.1.3\` (the
+v0.1.3 install dir), wrote the payload there, and the new
+`CleanupOrphanYakDir` hook then deleted the parent — taking the just-
+installed v0.1.4 payload with it.
+
+Three fixes in `installers/rhino/inno/OrbitConnector.Rhino.iss`:
+
+- **`UsePreviousAppDir=no`** in `[Setup]` — always honour `DefaultDirName`,
+  regardless of any `InstallLocation` value carried over from a previous
+  install. With this, the payload is always written to
+  `%LOCALAPPDATA%\Programs\OrbitConnector\Rhino\<v>\`.
+- **Removed `PrivilegesRequiredOverridesAllowed=dialog`** — prevents the
+  installer from auto-elevating to admin (and writing HKLM uninstall keys
+  + ProgramData Start Menu shortcuts) when a previous admin install of
+  the same `AppId` is on the machine. Every install is now per-user, full
+  stop.
+- **Safety belt in `CleanupOrphanYakDir`** — refuses to delete the YAK-
+  managed dir if `{app}` is somehow inside it. Should never trigger now
+  that `UsePreviousAppDir=no` forces `{app}` into the new path; defensive
+  against future regressions re-introducing the v0.1.4 self-destruct.
+
+### Recovery for v0.1.3 / v0.1.4 users
+
+Same path as before, but use the v0.1.5 `.exe`:
+
+1. Open **Add/Remove Programs**, find any `ORBIT Connector for Rhino`
+   entry, click **Uninstall**. (If both a v0.1.3 admin install and a
+   broken v0.1.4 user install are present, uninstall both.)
+2. Make sure Rhino is **closed** before the next step.
+3. Run `OrbitConnector-Rhino-Setup-v0.1.5.exe`. The installer places
+   files at `%LOCALAPPDATA%\Programs\OrbitConnector\Rhino\0.1.5\`,
+   sweeps any leftover `%APPDATA%\McNeel\Rhinoceros\packages\8.0\
+   OrbitConnector\` folder out of the way, and rewrites the HKCU
+   plug-in registry entry to point at the new install path.
+4. Start Rhino. The connector auto-loads on startup; verify the ORBIT
+   panel shows up and reports `v0.1.5` in its footer.
+
 ## v0.1.4 — Installer hotfix (move install path out of Rhino's YAK-managed dir)
 
 - **Critical fix:** Installer no longer drops files into Rhino's YAK-managed
