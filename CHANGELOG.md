@@ -11,6 +11,52 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.4 — Installer hotfix (move install path out of Rhino's YAK-managed dir)
+
+- **Critical fix:** Installer no longer drops files into Rhino's YAK-managed
+  package directory (`%APPDATA%\McNeel\Rhinoceros\packages\8.0\`). Rhino's
+  Package Manager scans that path on every startup and treats any subfolder
+  it didn't install itself as an "uninstalled package" and wipes it — Rhino's
+  startup log on a v0.1.3 install showed the smoking gun:
+  ```
+  [PackageManager] Cleaning up uninstalled packages...
+  [PackageManager] Removing OrbitConnector
+  ```
+  Net effect on v0.1.3: the `.rhp` got deleted before Rhino's plug-in loader
+  could find it on the next launch, the auto-register registry key pointed at
+  a now-nonexistent file, and the Start Menu shortcut for "Install in Rhino 8"
+  became a broken link. Files now install to
+  `%LOCALAPPDATA%\Programs\OrbitConnector\Rhino\<version>\` instead, which is
+  outside every Rhino-managed directory tree. The HKCU plug-in registry entry
+  continues to point Rhino at the correct `.rhp`.
+- **Post-install cleanup:** any orphan v0.1.0 - v0.1.3 folder still sitting in
+  the YAK-managed dir is removed during install. Rhino must be closed for the
+  cleanup to run; if the installer detects a running Rhino it shows a popup
+  asking the user to close Rhino and re-run, or delete the folder manually.
+- **Start Menu:** added an `ORBIT Connector Updates` URL shortcut pointing at
+  `https://github.com/REBUS-ORBIT/orbit-connectors/releases/latest`. Its
+  target is a URL rather than a file, so it survives even if the `.rhp` is
+  ever deleted — useful as an always-present marker that the install
+  completed and as a one-click path to the next release.
+
+### Recovery instructions for v0.1.3 users
+
+If you installed v0.1.3 and Rhino's `[PackageManager] Removing OrbitConnector`
+log line ate your install:
+
+1. Open **Add/Remove Programs**, find **ORBIT Connector for Rhino**, click
+   **Uninstall**. (This removes the broken HKCU registry entry left over from
+   v0.1.3.)
+2. Make sure Rhino is **closed** before the next step — the v0.1.4 installer's
+   YAK-dir cleanup needs exclusive access to delete the orphan folder.
+3. Run the v0.1.4 `OrbitConnector-Rhino-Setup-v0.1.4.exe`. The installer will
+   place files at `%LOCALAPPDATA%\Programs\OrbitConnector\Rhino\0.1.4\`, sweep
+   any leftover folder under `%APPDATA%\McNeel\Rhinoceros\packages\8.0\
+   OrbitConnector\` out of the way, and rewrite the HKCU plug-in registry
+   entry to point at the new install path.
+4. Start Rhino. The connector auto-loads on startup; verify the ORBIT panel
+   shows up and reports `v0.1.4` in its footer.
+
 ## v0.1.3 — Auto-register Rhino plug-in on install
 
 - **Inno Setup installer now writes Rhino's plug-in discovery keys** under
