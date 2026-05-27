@@ -98,6 +98,66 @@ A connector is a pure send/receive bridge. It must:
 A connector that does any of these steps differently from the reference
 implementation **will desync** with the viewer. Stick to the contract.
 
+## Reference implementations
+
+The repository ships one canonical, fully-implemented connector (Rhino) and
+release-pipeline scaffolds for the next two hosts on the roadmap so that
+every release shape stays consistent across hosts from day one.
+
+| Host                  | Status         | Source                                          | Installer artifacts (per release)                                                |
+|-----------------------|----------------|-------------------------------------------------|-----------------------------------------------------------------------------------|
+| **Rhino 8 / Grasshopper** | **Shipped**    | `src/OrbitConnector.Rhino/`                  | `orbit-connector-<v>-rh8-win.yak`, `OrbitConnector-Rhino-Setup-v<v>.exe`, `OrbitConnector-Rhino-Setup-v<v>.dmg` *(YAK Mac scaffolds also attached)* |
+| **Vectorworks**       | **Scaffold**   | `src/OrbitConnector.Vectorworks/` *(placeholder)* | `OrbitConnector-Vectorworks-Setup-v<v>.exe`, `OrbitConnector-Vectorworks-Setup-v<v>.dmg` |
+| **Unreal Engine 5**   | **Scaffold**   | `src/OrbitConnector.UE5/` *(placeholder)*      | `OrbitConnector-UE5-Setup-v<v>.exe`, `OrbitConnector-UE5-Setup-v<v>.dmg` |
+
+*Shipped* means the connector has been smoke-tested against an ORBIT
+server and the installer payload contains a real, loadable plug-in.
+*Scaffold* means the installer compiles cleanly and produces a valid
+artifact with the canonical filename, but the payload is a placeholder
+README — the actual plug-in source is the next deliverable for that host.
+
+The naming convention for installer artifacts is fixed:
+
+```
+OrbitConnector-<Host>-Setup-v<Version>.<exe|dmg>
+```
+
+Windows installers are produced by Inno Setup; macOS installers are
+produced by `hdiutil` wrapping a `.pkg` (or, for scaffolds, a plain
+README) into a mountable `.dmg`. YAK files for Rhino keep their
+McNeel-imposed naming (`orbit-connector-<v>-rh8-<platform>.yak`) and
+ride along as additional artifacts on the Rhino releases.
+
+### Adding a new connector
+
+When you add ORBIT support for a new host (Revit, Blender, AutoCAD, etc.),
+follow the Vectorworks/UE5 pattern as the canonical template:
+
+1. Create `src/OrbitConnector.<Host>/` with a placeholder `README.md` and
+   an empty `src/` folder (see `src/OrbitConnector.Vectorworks/README.md`
+   for the template). Real plug-in source lands here when development
+   starts.
+2. Create `installers/<host>/` with:
+   - `inno/OrbitConnector.<Host>.iss` — Inno Setup script. Use a
+     **new constant `AppId` GUID** so Windows upgrades work cleanly.
+     Default install dir should match the host's per-user plug-in path.
+   - `build-windows.ps1` — wraps ISCC on the .iss with the connector
+     version.
+   - `build-macos.sh` — wraps `hdiutil` to produce the matching `.dmg`.
+   - `pkg/build-pkg.sh` — skeleton for a future native `.pkg`
+     (only relevant when the host has a real macOS plug-in payload).
+   - `README.md` — describes the local-build commands and the CI
+     wiring.
+3. Add two new jobs to `.github/workflows/release.yml`:
+   `build-<host>-windows` and `build-<host>-macos`. While the
+   connector is a scaffold, mark both as `continue-on-error: true` so
+   a glitchy placeholder build never blocks a release.
+4. Extend the `release` job's `files:` glob list to include the new
+   artifacts.
+
+The contract for what a real connector plug-in must do is documented
+below — read it end-to-end before writing any host-specific code.
+
 ## Reference implementation: Rhino + Grasshopper
 
 The Rhino 8 connector lives under `src/OrbitConnector.Rhino/`. Target framework
@@ -824,45 +884,80 @@ implementation. Do not reproduce them in new connectors.
 ## Repository layout
 
 ```
-orbit-connectors/                                    # <-- copy this layout for new connectors
+orbit-connectors/
 ├── ORBIT-Connectors.sln                             # solution; add new csproj here
 ├── Directory.Build.props                            # SDK reference switch (Local / NuGet)
 ├── nuget.config                                     # nuget.org + ghcr.io REBUS-ORBIT feed
 ├── .gitignore                                       # ignores bin/ obj/ .env etc.
+├── CHANGELOG.md                                     # per-release notes (used by CI for release body)
+├── LICENCE.txt                                      # MIT placeholder
 ├── .github/
 │   └── workflows/
-│       └── build.yml                                # dotnet build + test + .rhp upload
-├── src/
-│   └── OrbitConnector.Rhino/                        # the canonical reference connector
-│       ├── OrbitConnector.Rhino.csproj
-│       ├── OrbitConnectorPlugin.cs                  # PlugIn entry point
-│       ├── Auth/
-│       │   ├── OrbitAuthManager.cs                  # OAuth flow (PKCE-style)
-│       │   └── OrbitTokenStore.cs                   # per-server token persistence
-│       ├── Commands/
-│       │   └── OrbitOpenPanelCommand.cs             # "Orbit" Rhino command
-│       ├── Converters/
-│       │   ├── ConversionContext.cs                 # per-send state + material build
-│       │   └── ToOrbit/
-│       │       ├── IRhinoToOrbitConverter.cs        # converter interface
-│       │       ├── RhinoMeshConverter.cs            # Mesh → Orbit.Objects.Geometry.Mesh
-│       │       ├── RhinoBrepConverter.cs            # Brep → RhinoDataObject (native + display)
-│       │       └── RhinoFallbackConverter.cs        # catch-all → display meshes
-│       ├── Models/
-│       │   ├── CardStore.cs                         # cards persisted in RhinoDoc.Strings
-│       │   ├── ConnectorCard.cs                     # Send/Receive card model
-│       │   └── ServerConfig.cs                      # prod/dev URLs + OAuth app ids
-│       ├── Pipeline/
-│       │   └── RhinoSendPipeline.cs                 # 5-stage orchestrator
-│       ├── Properties/
-│       │   └── Resources.cs                         # embedded icon placeholder
-│       ├── UI/
-│       │   └── OrbitEtoPanel.cs                     # WebView-hosted Eto panel
-│       └── installer/
-│           ├── Build-Installer.ps1                  # CI / local installer build
-│           └── OrbitConnector.iss                   # Inno Setup script
+│       ├── build.yml                                # dotnet build + test (push / PR)
+│       └── release.yml                              # tag-driven multi-connector release
+├── src/                                             # one OrbitConnector.<Host>/ per supported host
+│   ├── OrbitConnector.Rhino/                        # canonical reference connector (shipped)
+│   │   ├── OrbitConnector.Rhino.csproj
+│   │   ├── OrbitConnectorPlugin.cs                  # PlugIn entry point
+│   │   ├── Auth/
+│   │   │   ├── OrbitAuthManager.cs                  # OAuth flow (PKCE-style)
+│   │   │   └── OrbitTokenStore.cs                   # per-server token persistence
+│   │   ├── Commands/
+│   │   │   └── OrbitOpenPanelCommand.cs             # "Orbit" Rhino command
+│   │   ├── Converters/
+│   │   │   ├── ConversionContext.cs                 # per-send state + material build
+│   │   │   └── ToOrbit/
+│   │   │       ├── IRhinoToOrbitConverter.cs        # converter interface
+│   │   │       ├── RhinoMeshConverter.cs            # Mesh → Orbit.Objects.Geometry.Mesh
+│   │   │       ├── RhinoBrepConverter.cs            # Brep → RhinoDataObject (native + display)
+│   │   │       └── RhinoFallbackConverter.cs        # catch-all → display meshes
+│   │   ├── Models/
+│   │   │   ├── CardStore.cs                         # cards persisted in RhinoDoc.Strings
+│   │   │   ├── ConnectorCard.cs                     # Send/Receive card model
+│   │   │   └── ServerConfig.cs                      # prod/dev URLs + OAuth app ids
+│   │   ├── Pipeline/
+│   │   │   └── RhinoSendPipeline.cs                 # 5-stage orchestrator
+│   │   ├── Properties/
+│   │   │   └── Resources.cs                         # embedded icon placeholder
+│   │   ├── UI/
+│   │   │   └── OrbitEtoPanel.cs                     # WebView-hosted Eto panel
+│   │   └── installer/                               # legacy in-source installer scripts (kept for local use)
+│   │       ├── Build-Installer.ps1
+│   │       └── OrbitConnector.iss
+│   ├── OrbitConnector.Vectorworks/                  # scaffold (no plug-in source yet)
+│   │   ├── README.md                                # describes the planned layout
+│   │   └── src/                                     # empty; real source goes here
+│   └── OrbitConnector.UE5/                          # scaffold (no plug-in source yet)
+│       ├── README.md
+│       └── src/
+├── installers/                                      # one subfolder per host -- CI calls these
+│   ├── rhino/
+│   │   ├── build-yak.ps1                            # YAK build (Windows + Rhino-shipped YAK on Mac)
+│   │   ├── build-mac.sh                             # Mac YAK build (scaffold; csproj split pending)
+│   │   ├── build-dmg.sh                             # hdiutil wrapper -- ships a "use YAK on Mac" README until pkg builds
+│   │   ├── MACOS.md                                 # Mac story / required follow-up
+│   │   ├── inno/OrbitConnector.Rhino.iss            # Inno Setup script (real payload)
+│   │   ├── yak/manifest.yml                         # YAK package manifest
+│   │   └── pkg/build-pkg.sh                         # SKELETON; .pkg flow TODO
+│   ├── vectorworks/
+│   │   ├── README.md
+│   │   ├── build-windows.ps1                        # ISCC + placeholder payload
+│   │   ├── build-macos.sh                           # hdiutil + placeholder payload
+│   │   ├── inno/OrbitConnector.Vectorworks.iss
+│   │   └── pkg/build-pkg.sh                         # SKELETON
+│   └── ue5/
+│       ├── README.md
+│       ├── build-windows.ps1
+│       ├── build-macos.sh
+│       ├── inno/OrbitConnector.UE5.iss
+│       └── pkg/build-pkg.sh                         # SKELETON
 └── README.md                                        # this file
 ```
+
+For new hosts, follow [Adding a new connector](#adding-a-new-connector)
+above. The Vectorworks and UE5 folders are the canonical templates —
+copy the layout, swap the host name, and you get a release artifact
+slot for free.
 
 ## Contributing
 
