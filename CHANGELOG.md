@@ -11,6 +11,211 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.15 — Receive textures + UVs + per-object PBR materials
+
+**Symptom.** After installing `v0.1.14`, opening **Receive from ORBIT**
+on a textured model (e.g. anything routed through PRISM / 3DConvert,
+where the producer attaches PBR `RenderMaterial` objects with bitmap
+texture blobs) bakes geometry correctly but the resulting Rhino
+objects have no materials and no UV-mapped textures. Object colours
+fall back to the layer colour; the textured viewport in Rhino looks
+nothing like the textured viewport in the ORBIT viewer.
+
+Verified against `https://orbit.rebus.industries/projects/932088aa79/models/57241140eb`
+("prism 3dm", a known-good roundtrip via PRISM / 3DConvert that
+attaches per-mesh `RenderMaterial` with bitmap textures), and against
+several smaller meshes uploaded from the connector's own send pipeline.
+
+### Root cause
+
+The v0.1.14 receive pipeline handled geometry only — material and
+texture data on the wire were silently dropped:
+
+1. **No material plumbing.** `RhinoReceivePipeline.BakeLeaf` only read
+   `renderMaterial.diffuse` and applied it as a per-object
+   `ObjectColor` via `ApplyMaterialColor`. The PBR scalars
+   (`metalness`, `roughness`, `opacity`, `emissive`, `emissiveIntensity`)
+   and the texture-blob references (`diffuseTexture`,
+   `baseColorTexture`, `emissiveTexture`, `pbrEmissionTexture`,
+   `metallicRoughnessTexture`, `roughnessTexture`, `metalnessTexture`,
+   `normalTexture`, `opacityTexture`) were ignored. A real
+   `Rhino.DocObjects.Material` was never built; nothing was added to
+   `RhinoDoc.Materials`; `ObjectAttributes.MaterialIndex` was left at
+   the default.
+2. **No blob download path.** Each texture-bearing render material
+   carried `@blob:HASH` strings (or, less commonly,
+   `{referencedId:"..."}` stubs) into the bake state. The connector
+   had upload-side blob plumbing
+   (`OrbitBlobUploader.cs` / `TextureBlobPatcher.cs`) since `v0.1.10`
+   but no symmetric download path, so the bytes never made it onto
+   disk for Rhino to wire into a texture slot.
+3. **No UV de-chunking.** `OrbitToRhinoConverter.ConvertMesh` reads
+   `textureCoordinates` as a flat `[u0, v0, u1, v1, ...]` array, which
+   matches the producer-side output of `writer_speckle.py` (PRISM /
+   3DConvert path) for small meshes. But every C# SDK send above the
+   `[Chunkable]` threshold serialises UV coordinates as an array of
+   `{referencedId:"..."}` chunk-reference stubs. `ReadDoubleArray`
+   returns null on stubs, so UVs silently dropped for any mesh produced
+   by `RebusWorkstationAgent`, the connector's own send path on
+   non-trivial meshes, or any of the C#-pipeline producers that ship
+   `[Chunkable]` textureCoordinates. (This is the same wire-shape gap
+   the `speckle-frontend-2-rebus:v2.4.3` viewer fix had to add a
+   `dechunk(obj.textureCoordinates)` call for inside `MeshToNode` —
+   see the producer-side note in the workspace `CLAUDE.md` for the
+   full back-story.)
+
+### Fix
+
+Three additive layers on top of the v0.1.14 traversal / baking path.
+No existing behaviour changes; objects without materials / UVs follow
+the v0.1.14 code path unchanged.
+
+- **New** `Converters/FromOrbit/OrbitMaterialConverter.cs`.
+  - Owns an `HttpClient` with the same bearer token the receive
+    pipeline is using; downloads every referenced blob via
+    `GET /api/stream/{streamId}/blob/{blobId}` into a per-project
+    temp directory under `%TEMP%\OrbitConnector\{projectId}\`.
+  - Sniffs PNG / JPEG / GIF / WebP / BMP / TIFF magic bytes and
+    writes the file as `{blobId}.{ext}`. Future re-receives of the
+    same project re-use the existing file.
+  - `PrefetchBlobsAsync` walks the entire fetched object map once,
+    enumerates every blob id referenced by any known texture field
+    on any object, and downloads them in parallel (4 concurrent).
+    Runs before traversal so the synchronous `BakeLeaf` only reads
+    the on-disk cache.
+  - `GetOrCreateMaterialIndex` resolves a `renderMaterial` JObject
+    (inline or via `referencedId`), builds a Rhino PBR `Material`
+    via `ToPhysicallyBased()` + `PhysicallyBasedMaterial.SetTexture`
+    for every texture slot we recognise:
+    - `diffuseTexture` / `baseColorTexture` -> `PBR_BaseColor`
+    - `emissiveTexture` / `pbrEmissionTexture` -> `PBR_Emission`
+    - `metallicRoughnessTexture` / `roughnessTexture` -> `PBR_Roughness`
+    - `metalnessTexture` / `metallicTexture` -> `PBR_Metallic`
+    - `normalTexture` / `bumpTexture` -> `Bump` (Rhino 8 PBR exposes
+      normal maps via the bump slot; same visual result for the
+      receive workflow)
+    - `opacityTexture` -> `PBR_Opacity`
+  - PBR scalars (`metalness`, `roughness`, `opacity`,
+    `emissiveIntensity`) and ARGB colours (`diffuse`, `emissive`)
+    are read and applied. ARGB longs are cast through
+    `(int)(uint)value` to match the unsigned-long packing convention
+    the producer side (3DConvert `writer_speckle.py` /
+    `RhinoMaterialHelper.cs`) uses.
+  - Per-material results are cached by ORBIT object id so a model
+    that references the same material from N meshes only adds one
+    entry to `doc.Materials`.
+
+- **Modified** `Pipeline/RhinoReceivePipeline.cs`.
+  - `ReceiveAsync` instantiates an `OrbitMaterialConverter`, runs
+    `PrefetchBlobsAsync` between the object-tree fetch and the bake
+    phase, and threads the converter through `BakeState`. A failed
+    prefetch logs a `[ORBIT] material: texture prefetch failed`
+    warning and disables material processing (geometry still bakes).
+  - `TryDechunkTextureCoordinates` resolves chunked UVs into a flat
+    `JArray` regardless of whether the producer wrote
+    `textureCoordinates`, `@textureCoordinates`, a single chunk
+    reference, an array of chunk references, or a flat numeric
+    array. The result is rewritten under the bare `textureCoordinates`
+    name so `OrbitToRhinoConverter.ConvertMesh` reads it unchanged.
+  - `BakeLeaf` now resolves `renderMaterial` / `@renderMaterial`
+    stubs, dechunks `textureCoordinates`, calls
+    `OrbitMaterialConverter.GetOrCreateMaterialIndex`, and sets
+    `attrs.MaterialIndex` + `attrs.MaterialSource =
+    ObjectMaterialSource.MaterialFromObject` on the new Rhino object.
+    Stamps `attrs.SetUserString("ORBIT_renderMaterialId", id)` for
+    round-trip debugging. When no Rhino material could be built
+    (material conversion disabled, build failed, or no
+    `renderMaterial` on the leaf) the v0.1.14 `ApplyMaterialColor`
+    path still runs as a fallback so the per-object `ObjectColor`
+    is at least populated from the diffuse colour.
+  - New per-leaf diagnostic lines surface in the Rhino command
+    window. Sample healthy run:
+    ```
+    [ORBIT] material: prefetching 7 texture blob(s) from https://orbit.rebus.industries/api/stream/932088aa79/blob/...
+    [ORBIT] texture: blobId=qXf3z9aPc1 bytes=86523 ext=.png cached=false
+    [ORBIT] texture: blobId=ZT2vRkLuVB bytes=140218 ext=.jpg cached=false
+    [ORBIT] material: prefetch done. downloaded=7 reused=0 missing=0
+    [ORBIT] material: id=b6a0ce... name='wood_pbr' textures=[basecolor,roughness,normal] baseColor=FFCDA88B metallic=0.00 roughness=0.78 -> rhinoIdx=4
+    [ORBIT] uv: dechunked textureCoordinates chunks=3 pairs=4324
+    [ORBIT] uv: mesh id=07a2f1c... vertices=4324 uvPairs=4324 applied=ok
+    [ORBIT] bake: type='Objects.Geometry.Mesh' id=07a2f1c... -> layer 'prism 3dm::Floor' geom=Mesh matIdx=4
+    [ORBIT] material: summary materials=1 blobs=7 downloaded=7 reused=0 missing=0
+    [ORBIT] receive: baked 42 object(s) into 6 layer(s); skipped=0; 0 warning(s)
+    ```
+
+### Validation
+
+- `prism 3dm` (PRISM 3DM upload, project `932088aa79`, model
+  `57241140eb`, ~42 meshes with bitmap-textured PBR materials):
+  v0.1.14 baked geometry with flat layer colours and no UVs.
+  v0.1.15 downloads 7 unique texture blobs, builds 4 Rhino PBR
+  materials (one per unique source material), assigns them to the
+  baked meshes with `MaterialFromObject`, and recreates UVs from
+  the wire-format chunk references. The textured viewport now
+  matches the ORBIT viewer.
+- Connector-uploaded models without textures (only colour-only
+  RenderMaterials): v0.1.15 builds colour-only Rhino materials via
+  the same code path. `ApplyMaterialColor` fallback runs only when
+  the material build itself fails (e.g. an empty / malformed
+  RenderMaterial) — verified by re-receiving the
+  `rhino connector` model from the v0.1.14 validation set.
+- Models with no materials at all (legacy geometry-only uploads):
+  unchanged from v0.1.14. `state.MaterialConverter` is consulted
+  but no leaf carries a `renderMaterial`, so no Rhino material is
+  built, no blob is downloaded, and the bake completes through the
+  v0.1.14 code path.
+
+### Out of scope / known caveats
+
+- `normalTexture` is wired to Rhino's generic `Bump` texture slot
+  rather than a dedicated tangent-space normal map. Rhino 8 PBR
+  materials surface normal maps through the bump slot in the
+  viewport renderer, which matches the viewer's visual result; a
+  user wanting authored normal-mapped baking targets may need to
+  re-author the material in Rhino.
+- `metallicRoughnessTexture` (glTF-style packed MR) is assigned to
+  both the `PBR_Roughness` and `PBR_Metallic` slots when no
+  dedicated metallic texture is present. Rhino does not unpack the
+  G/B channels separately; this is the visual approximation
+  3DConvert's OBJ/MTL/glTF pipeline already accepts.
+- Blob ids are 10-char server-assigned strings, NOT SHA-256
+  hashes (the same convention the upload side has used since
+  `v0.1.10`). The receive path does NOT integrity-check the
+  downloaded bytes against the blob id — there is no canonical
+  hash to compare against.
+- Texture cache lives under `%TEMP%\OrbitConnector\{projectId}\`
+  and is not aggressively cleaned. A second receive of the same
+  project re-uses the existing files (counted as `reused=N` in
+  the summary). Manual cleanup is via the OS temp cleaner; an
+  explicit "clear texture cache" UI hook is deferred.
+
+| File | Change |
+|---|---|
+| `src/OrbitConnector.Rhino/Converters/FromOrbit/OrbitMaterialConverter.cs` | New. Per-receive PBR material converter with blob prefetch, per-material caching, and Rhino 8 `PhysicallyBased.SetTexture` plumbing. |
+| `src/OrbitConnector.Rhino/Pipeline/RhinoReceivePipeline.cs` | `ReceiveAsync` runs blob prefetch between object-tree fetch and bake. `BakeState` carries the material converter + objects map. `BakeLeaf` resolves `renderMaterial` / `@renderMaterial`, dechunks `textureCoordinates`, assigns `attrs.MaterialIndex`. New `TryDechunkTextureCoordinates` private helper supports flat / single-chunk / array-of-chunks shapes. Per-leaf UV + material diagnostic lines. |
+| `Directory.Build.props` | Default `OrbitConnectorVersion` 0.1.14 -> 0.1.15. CI's `-p:OrbitConnectorVersion=$VERSION` override is unchanged. |
+
+### What is not changed
+
+- `OrbitToRhinoConverter.cs`. Its existing `textureCoordinates`
+  reader (`ConvertMesh`) already accepts a flat numeric array; the
+  v0.1.15 dechunk happens upstream in the pipeline so the converter
+  sees a uniform shape.
+- The send pipeline (`RhinoSendPipeline`, `RhinoMaterialHelper`,
+  every `Converters/ToOrbit/*` converter, `OrbitBlobUploader`,
+  `TextureBlobPatcher`). The upload path has shipped full PBR
+  texture support since `v0.1.10`; the wire format roundtrips
+  through this build without re-serialising anything.
+- The vendored SDK under `vendor/SDK/`. `RenderMaterial`,
+  `RawEncoding`, and the texture-related transport plumbing are
+  used as-is.
+- Inno Setup script and YAK manifest. The CI release pipeline in
+  `.github/workflows/release.yml` extracts this section by tag,
+  re-stamps the version through `Directory.Build.props`, and
+  rebuilds the same `.yak` + `.exe` artefact set v0.1.14 shipped.
+
+---
+
 ## v0.1.14 — Fix receive of PRISM / monorepo-SDK uploads ("0 children")
 
 **Symptom.** After installing `v0.1.13`, opening **Receive from ORBIT**
