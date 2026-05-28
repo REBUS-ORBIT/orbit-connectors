@@ -11,6 +11,82 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.11 — Combined release: v0.1.9 metadata + v0.1.10 receive (regression fix)
+
+A tidy-up release. The `feat/receive-from-orbit` branch that became
+`v0.1.10` was branched off of `v0.1.8` rather than `v0.1.9`, so when it
+landed on `main` it silently reverted every plug-in-branding change
+that `v0.1.9` had just shipped. Users upgrading from `v0.1.9` to
+`v0.1.10` reported losing the **Check for updates** link in the panel
+header, the **publisher / email / website** fields in Rhino's
+**Tools → Options → Plug-ins → Properties** dialog, and the ORBIT
+**panel-rail icon** in Rhino's side dock — even though the plug-in
+itself still loaded and the new receive-from-ORBIT pipeline worked.
+
+`v0.1.11` re-applies every `v0.1.9` change on top of `v0.1.10`'s
+receive pipeline, with no functional changes outside the regression
+fixes.
+
+### Re-applied from v0.1.9
+
+| File | Change |
+|---|---|
+| `Properties/AssemblyInfo.cs` | Restored `[assembly: PlugInDescription(DescriptionType.Organization \| Email \| WebSite \| Icon, ...)]` so Rhino's Plug-In Manager shows REBUS Industries as the publisher, `IT@rebus.industries` as the contact email, and `https://rebus.industries` as the website. The `Icon` attribute points at the embedded `OrbitConnector.Rhino.Resources.orbit-logo.png` resource so Rhino's Plug-In Manager renders the ORBIT logo for the entry. |
+| `Properties/Resources.cs` | Restored the `byte[]?` placeholder. v0.1.10 had reverted to a `System.Drawing.Bitmap` reference, which would re-introduce the `v0.1.0–v0.1.6` "initialization failed" trip-hazard (TypeForwarder against `System.Drawing.Common Version=0.0.0.0` failing inside Rhino's plug-in `AssemblyLoadContext`). |
+| `OrbitConnector.Rhino.csproj` | Restored the v0.1.9 build-output strategy — `CopyLocalLockFileAssemblies=true` so transitive NuGet deps (`Newtonsoft.Json`, `Microsoft.Extensions.Logging.Abstractions`, `Microsoft.Extensions.DependencyInjection.Abstractions`) ship alongside the `.rhp`; `System.Drawing.Common` reference kept compile-time-only via `ExcludeAssets="runtime" PrivateAssets="all"`; `<Authors>` and `<Company>` set to `REBUS Industries`; `<Version>` / `<AssemblyVersion>` / `<FileVersion>` inherited from `Directory.Build.props` (lockstep). |
+| `OrbitConnectorPlugin.cs` | Restored `LoadOrbitPanelIcon()` — reads `OrbitConnector.Rhino.Resources.orbit-logo.png` from the manifest, scales it to 32×32, returns `System.Drawing.Icon.FromHandle(bitmap.GetHicon())`. `Panels.RegisterPanel(this, typeof(OrbitEtoPanel), "ORBIT", LoadOrbitPanelIcon())` so the ORBIT logo appears on the panel-rail tab in Rhino's side dock instead of a blank square. The diagnostic `load.log` writer at `%LOCALAPPDATA%\OrbitConnector\load.log` and the `static OrbitConnectorPlugin.Version` resolved from `AssemblyInformationalVersionAttribute` are also restored. |
+| `UI/OrbitEtoPanel.cs` | Restored `case "checkUpdates"` dispatch + `case "ready"` version emit; restored `HandleUpdateCheckAsync` / `CheckForUpdatesAsync` / `NormaliseVersion` and the `UpdateCheckResult` struct, plus the static `_http` and `CreateUpdateCheckClient` helpers. The new v0.1.10 `case "receive"` → `HandleReceiveAsync` dispatch is preserved. |
+| `UI/wwwroot/index.html` | Restored `#header-right` flex column with `#version-label` + `#btn-check-updates` (with hover/disabled styles); restored the `case 'version'` and `case 'updateCheck'` handlers in `window.orbitReceive`; restored `onVersion()` / `onUpdateCheck()` / the `btn-check-updates.onclick` handler. The new v0.1.10 `+ Receive` button and receive-card UI are preserved. |
+
+### Diagnosis: "plugin not appearing in Plug-in Manager / Package Manager"
+
+The user's report mentioned that `v0.1.10` "is not appearing in the
+plugins settings window or the package manager". Two distinct surfaces
+were conflated:
+
+1. **Tools → Options → Plug-ins** (the plug-in list dialog) — the
+   plug-in *was* registered (the Inno installer writes a complete
+   set of registry values under `HKCU\Software\McNeel\Rhinoceros\8.0\Plug-ins\{4F3A2B1C-...}`
+   as it has since v0.1.7) and *did* load. But because v0.1.10 had
+   reverted the `[assembly: PlugInDescription(...)]` attributes, the
+   Properties dialog showed it as anonymous — empty Publisher /
+   Email / Website fields. Restoring the attributes makes the
+   Properties dialog populate fully.
+
+2. **Tools → Package Manager** (`_PackageManager` command) — this
+   surface only lists plug-ins installed via Rhino's YAK package
+   registry. Since `v0.1.4`, the Inno installer deliberately writes
+   the payload **outside** any YAK-managed directory (so Rhino's
+   Package Manager doesn't auto-clean it on every startup — see
+   the v0.1.4 hotfix in `installers/rhino/inno/OrbitConnector.Rhino.iss`).
+   The plug-in is therefore *correctly* invisible to Package Manager
+   on the Inno install path. A YAK package is also published as a
+   release artifact (`orbit-connector-<v>-rh8-win.yak`) and *will*
+   show up in Package Manager if installed via that path.
+
+### Diagnosis: "logo missing from toolbar"
+
+The "toolbar" in Rhino is the top button strip and is configured
+through `.rui` files; ORBIT does not currently ship one. The
+panel-rail icon (the small icon next to the `ORBIT` panel tab on
+Rhino's side dock) was the surface broken by `v0.1.10`'s reversion
+of `LoadOrbitPanelIcon()`, and is restored here. A proper toolbar
+button is a future feature, not in scope for `v0.1.11`.
+
+### What is **not** changed
+
+- The receive-from-ORBIT pipeline, `OrbitToRhinoConverter`,
+  `RhinoReceivePipeline`, and every SDK addition from `v0.1.10`
+  (`View3D`, `Vector`, `RenderMaterial`, `RawEncoding`,
+  `RhinoDataObject`, `OrbitBlobUploader`, `TextureBlobPatcher`)
+  are kept verbatim.
+- Inno Setup script (`OrbitConnector.Rhino.iss`), YAK manifest
+  (`installers/rhino/yak/manifest.yml`), and CI workflows are
+  unchanged from `v0.1.10` — the registry layout that worked for
+  `v0.1.7`–`v0.1.9` is unchanged for `v0.1.11`.
+
+---
+
 ## v0.1.10 — Receive from ORBIT pipeline
 
 Adds **receive-from-ORBIT** functionality to the Rhino Connector. Users can now pull any

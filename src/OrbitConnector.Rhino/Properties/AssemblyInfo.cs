@@ -1,14 +1,28 @@
-using System.Reflection;
 using System.Runtime.InteropServices;
+using Rhino.PlugIns;
 
-// This GUID is the Rhino plug-in ID — must be stable across builds.
-// It is used by Rhino to identify the plugin in the plug-in registry.
+// -----------------------------------------------------------------------------
+// Rhino plug-in identity GUID -- stable across releases.
+//
+// Rhino reads this attribute from the compiled .rhp at load time and uses it
+// as the plug-in's persistent ID in
+//   HKCU\Software\McNeel\Rhinoceros\8.0\Plug-ins\{<this-guid>}.
+//
+// The Inno Setup installer (installers/rhino/inno/OrbitConnector.Rhino.iss)
+// writes the same GUID into that registry path so Rhino auto-discovers the
+// plug-in on next start without the user having to drag-drop the .rhp first.
+//
+// IF YOU CHANGE THIS GUID YOU MUST ALSO UPDATE THE INSTALLER.
+// Do not regenerate. Same constraint as PRISM agent's plug-in id.
+// -----------------------------------------------------------------------------
 [assembly: Guid("4F3A2B1C-8E5D-4A9F-B6C2-1D7E3F4A5B6C")]
 
-[assembly: AssemblyTitle("ORBIT Connector for Rhino")]
-[assembly: AssemblyDescription("Send and receive geometry between Rhino 8 and ORBIT")]
-[assembly: AssemblyCompany("REBUS Industries")]
-[assembly: AssemblyProduct("ORBIT Rhino Connector")]
-[assembly: AssemblyCopyright("Copyright © REBUS Industries 2026")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+// -----------------------------------------------------------------------------
+// Rhino Plugin Manager contact / branding metadata.
+// These attributes populate the "Publisher", "Email", "Website", and icon
+// fields shown in Rhino's Options → Plug-ins list.
+// -----------------------------------------------------------------------------
+[assembly: PlugInDescription(DescriptionType.Organization, "REBUS Industries")]
+[assembly: PlugInDescription(DescriptionType.Email,        "IT@rebus.industries")]
+[assembly: PlugInDescription(DescriptionType.WebSite,      "https://rebus.industries")]
+[assembly: PlugInDescription(DescriptionType.Icon,         "OrbitConnector.Rhino.Resources.orbit-logo.png")]

@@ -6,26 +6,47 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>OrbitConnector.Rhino</AssemblyName>
     <RootNamespace>OrbitConnector.Rhino</RootNamespace>
-    <Version>1.0.0</Version>
+    <!--
+      Version is inherited from Directory.Build.props (lockstep across all
+      connectors). Do not set <Version> / <AssemblyVersion> / <FileVersion>
+      here; bump $(OrbitConnectorVersion) in Directory.Build.props instead.
+    -->
     <Authors>REBUS Industries</Authors>
+    <Company>REBUS Industries</Company>
     <Description>ORBIT Connector for Rhino 8</Description>
     <OutputType>Library</OutputType>
-    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
-    <!-- AssemblyInfo.cs provides Guid, Title, Description — disable auto-gen for those -->
-    <GenerateAssemblyTitleAttribute>false</GenerateAssemblyTitleAttribute>
-    <GenerateAssemblyDescriptionAttribute>false</GenerateAssemblyDescriptionAttribute>
-    <GenerateAssemblyVersionAttribute>false</GenerateAssemblyVersionAttribute>
-    <GenerateAssemblyFileVersionAttribute>false</GenerateAssemblyFileVersionAttribute>
-    <GenerateAssemblyCompanyAttribute>false</GenerateAssemblyCompanyAttribute>
-    <GenerateAssemblyProductAttribute>false</GenerateAssemblyProductAttribute>
-    <GenerateAssemblyCopyrightAttribute>false</GenerateAssemblyCopyrightAttribute>
+    <!--
+      v0.1.6 hotfix: copy NuGet transitive runtime DLLs into the build output
+      so the installer ships them alongside the .rhp. Without this,
+      Newtonsoft.Json, Microsoft.Extensions.Logging.Abstractions,
+      Microsoft.Extensions.DependencyInjection.Abstractions, etc. are missing
+      at runtime — Rhino's plug-in loader reflects over the .rhp via
+      Assembly.GetTypes() to find the PlugIn subclass, the CLR fails to
+      resolve those dependencies, and Rhino shows the generic "Unable to load
+      ... initialization failed" dialog before OnLoad ever runs.
+
+      Rhino-provided assemblies (RhinoCommon, Eto, Rhino.UI) stay OUT of the
+      build output via Private=false on the local Reference items and
+      ExcludeAssets="runtime" on the NuGet fallback PackageReferences, so we
+      don't double-bundle and risk type-identity drift with whatever Rhino
+      loaded at startup.
+
+      v0.1.7 follow-up: System.Drawing.Common is INTENTIONALLY no longer
+      bundled with the payload (see Properties/Resources.cs and the
+      PackageReference below for the full root-cause writeup). Bundling it
+      actually caused the "initialization failed" regression in
+      v0.1.0-v0.1.6 because the type-forwarder chain through the legacy
+      System.Drawing facade requested
+      'System.Drawing.Common, Version=0.0.0.0' which neither the bundled DLL
+      nor the shared framework copy could satisfy inside Rhino's custom
+      plug-in AssemblyLoadContext.
+    -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <!-- Rename output to .rhp after build -->
   <Target Name="RenameToRhp" AfterTargets="Build">
-    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
-          DestinationFiles="$(OutputPath)$(AssemblyName).rhp"
-          OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFiles="$(OutputPath)$(AssemblyName).rhp" OverwriteReadOnlyFiles="true" />
   </Target>
 
   <!--
@@ -75,11 +96,48 @@
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="System.Drawing.Common" Version="8.*" Condition="'$(OS)' == 'Windows_NT'" />
+    <!--
+      System.Drawing.Common is REQUIRED AT COMPILE TIME because
+      Rhino.UI.Panels.RegisterPanel's signature takes a System.Drawing.Icon
+      parameter. We pass null at the call site, but the compiler still
+      needs the type to resolve the method overload.
+
+      ExcludeAssets="runtime" + PrivateAssets="all" stops the package's
+      payload DLL from being copied into the build output. At runtime,
+      Rhino's plug-in load context delegates to the default ALC, which
+      already has System.Drawing.Common 8.0.0.0 loaded from the
+      Microsoft.WindowsDesktop.App shared framework that hosts
+      RhinoCommon. The 0.0.0.0-stamped TypeForwardedFrom requests from
+      the legacy 'System.Drawing' facade are satisfied by the binder's
+      compatible-version policy against that already-loaded 8.0.0.0
+      copy.
+
+      v0.1.6 (the previous "fix" that didn't work) shipped
+      System.Drawing.Common.dll alongside the .rhp. That triggered a
+      different failure path: Rhino's plug-in ALC found the bundled
+      sibling DLL first, loaded it as a distinct assembly identity
+      (different from the shared-framework copy already pinned by
+      RhinoCommon's transitive closure), and the 0.0.0.0 TypeForwarder
+      request couldn't be unified across the two now-distinct
+      System.Drawing.Common identities. The plug-in load failed during
+      Rhino's metadata scan, BEFORE the static cctor ran, so the
+      v0.1.7 diagnostic logger never got a chance to record the
+      exception. The fix is to keep this assembly out of the build
+      output and let the default ALC supply the canonical copy.
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="8.*" ExcludeAssets="runtime" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\**\*" />
+    <!--
+      v0.1.8: the WebView-based ORBIT panel loads its UI from
+      Assembly.GetManifestResourceStream("OrbitConnector.Rhino.UI.wwwroot.index.html").
+      Without this embedded-resource glob the panel falls back to its
+      hardcoded "could not load UI resources" error page and the user
+      sees an empty dark panel — same shape as the v0.1.0-v0.1.7
+      placeholder regression. Keep the wwwroot tree embedded.
+    -->
     <EmbeddedResource Include="UI\wwwroot\**\*" />
   </ItemGroup>
 
