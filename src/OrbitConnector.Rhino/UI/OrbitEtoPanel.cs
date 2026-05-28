@@ -109,20 +109,35 @@ public class OrbitEtoPanel : Panel, IPanel
             using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resName);
             if (stream != null)
             {
-                using var reader = new System.IO.StreamReader(stream);
+                // v0.1.13: force UTF-8 explicitly on both reader and writer.
+                // The default StreamReader / File.WriteAllText pair on .NET 8
+                // already pick UTF-8 without BOM, but Rhino's Eto WebView on
+                // Windows uses the legacy IE/MSHTML rendering host for
+                // file:// URLs and that host ignores <meta charset> and
+                // falls back to the system ANSI code page (Windows-1252 on
+                // Western installs) when no BOM is present. Reading the
+                // embedded resource as UTF-8 explicitly and writing the temp
+                // file with a UTF-8 BOM forces the host to decode it as
+                // UTF-8 regardless of the system locale, which together
+                // with the now-ASCII-only HTML body fixes the v0.1.12
+                // mojibake the user reported.
+                using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
                 var html = reader.ReadToEnd();
-                // Write to temp file so the WebView can load it with a proper base URL
                 var tmpDir  = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "orbit_connector");
                 System.IO.Directory.CreateDirectory(tmpDir);
                 var tmpPath = System.IO.Path.Combine(tmpDir, "index.html");
-                System.IO.File.WriteAllText(tmpPath, html);
+                var utf8Bom = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+                System.IO.File.WriteAllText(tmpPath, html, utf8Bom);
                 _webView.Url = new Uri("file:///" + tmpPath.Replace('\\', '/'));
                 return;
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine($"[OrbitConnector] LoadHtml failed: {ex.Message}");
+        }
 
-        // Fallback: minimal error page
+        // Fallback: minimal error page.
         _webView.LoadHtml("<html><body style='background:#141414;color:#e8e8e8;font-family:sans-serif;padding:20px'>" +
                           "<p>ORBIT Connector could not load UI resources.</p></body></html>", new Uri("about:blank"));
     }
