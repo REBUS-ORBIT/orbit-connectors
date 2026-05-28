@@ -12,8 +12,6 @@ namespace Orbit.Objects.Geometry;
 /// </summary>
 public class Mesh : Base.OrbitBase
 {
-    public override string OrbitType => "Objects.Geometry.Mesh";
-
     /// <summary>Flat vertex array: x0,y0,z0, x1,y1,z1, ...</summary>
     [JsonProperty("vertices")]
     public List<double>? Vertices { get; set; }
@@ -42,28 +40,24 @@ public class Mesh : Base.OrbitBase
 
     [JsonProperty("units")] public string? Units { get; set; }
 
-    /// <summary>
-    /// Full Rhino layer path (e.g. <c>"Parent::Child"</c>). Required by the viewer to
-    /// resolve per-object layer colour when <see cref="ColorSource"/> is <c>"layer"</c>.
-    /// </summary>
+    // ── Layer / colour metadata ────────────────────────────────────────────────
+
+    /// <summary>Full Rhino layer path (e.g. <c>"Parent::Child"</c>). Set during send.</summary>
     [JsonProperty("layerPath")]
     public string? LayerPath { get; set; }
 
-    /// <summary>
-    /// Rhino layer colour as unsigned ARGB packed into a long
-    /// (<c>(long)(uint)Color.ToArgb()</c>).
-    /// </summary>
+    /// <summary>Layer colour as unsigned ARGB packed into a long.</summary>
     [JsonProperty("layerColor")]
     public long? LayerColor { get; set; }
 
-    /// <summary>
-    /// Where the displayed colour comes from. Typically <c>"layer"</c> (use the parent
-    /// layer's colour) or <c>"object"</c> (use a per-object override).
-    /// </summary>
+    /// <summary>Colour source: <c>"object"</c>, <c>"layer"</c>, or <c>"material"</c>.</summary>
     [JsonProperty("colorSource")]
     public string? ColorSource { get; set; }
 
+    /// <summary>Inline PBR render material. Carries diffuse/emissive scalars and texture blob refs.</summary>
+    [JsonProperty("renderMaterial")]
+    public Other.RenderMaterial? RenderMaterial { get; set; }
+
     /// <summary>Returns the number of vertices (Vertices.Count / 3).</summary>
-    [JsonIgnore]
     public int VertexCount => (Vertices?.Count ?? 0) / 3;
 }

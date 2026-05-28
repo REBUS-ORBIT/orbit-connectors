@@ -41,15 +41,7 @@
   }
   #wordmark{font-size:14px;font-weight:700;color:var(--accent);letter-spacing:.05em}
   #header-sub{font-size:10px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase;margin-top:1px}
-  #header-right{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
-  #version-label{font-size:11px;color:var(--text3);letter-spacing:.04em;font-variant-numeric:tabular-nums}
-  #btn-check-updates{
-    background:none;border:none;padding:0;margin:0;cursor:pointer;
-    font-family:var(--font);font-size:10px;color:#66B2FF;
-    text-decoration:none;letter-spacing:.04em;
-  }
-  #btn-check-updates:hover{text-decoration:underline}
-  #btn-check-updates:disabled{opacity:.5;cursor:default;text-decoration:none}
+  #header-right{display:flex;align-items:center;gap:8px}
 
   /* ── Buttons ── */
   .btn{
@@ -194,10 +186,7 @@
     <div id="wordmark">ORBIT</div>
     <div id="header-sub">Connector</div>
   </div>
-  <div id="header-right">
-    <span id="version-label">v—</span>
-    <button id="btn-check-updates" type="button" title="Check GitHub for a newer connector release">Check for updates</button>
-  </div>
+  <div id="header-right"></div>
 </div>
 
 <!-- Login page -->
@@ -272,53 +261,22 @@ function sendToHost(action, data) {
 window.orbitReceive = function(msg) {
   const m = JSON.parse(msg);
   switch (m.type) {
-    case 'version':      onVersion(m.version); break;
-    case 'updateCheck':  onUpdateCheck(m); break;
     case 'loginOk':      onLoginOk(m); break;
     case 'loginErr':     onLoginErr(m.message); break;
     case 'projects':     onProjects(m.cardId, m.items); break;
     case 'models':       onModels(m.cardId, m.items); break;
     case 'layers':       onLayers(m.layers); break;
-    case 'sendProgress': onProgress(m.cardId, m.status, m.percent); break;
-    case 'sendOk':       onSendOk(m.cardId, m.versionId, m.url); break;
-    case 'sendErr':           onSendErr(m.cardId, m.message); break;
+    case 'sendProgress':    onProgress(m.cardId, m.status, m.percent); break;
+    case 'sendOk':          onSendOk(m.cardId, m.versionId, m.url); break;
+    case 'sendErr':         onSendErr(m.cardId, m.message); break;
+    case 'receiveProgress': onProgress(m.cardId, m.status, m.percent); break;
+    case 'receiveOk':       onReceiveOk(m.cardId, m.summary, m.warnings); break;
+    case 'receiveErr':      onSendErr(m.cardId, m.message); break;
     case 'selectionCaptured': window._selectionCaptured?.(m.cardId, m.count); break;
     case 'cards':        onCards(m.items); break;
     case 'logout':       onLogout(); break;
   }
 };
-
-// ── Version + update check (v0.1.2 / restored in v0.1.8) ───────────────────
-function onVersion(version) {
-  const lbl = document.getElementById('version-label');
-  if (lbl) lbl.textContent = 'v' + (version || 'dev');
-}
-
-document.getElementById('btn-check-updates').onclick = () => {
-  const btn = document.getElementById('btn-check-updates');
-  if (!btn || btn.disabled) return;
-  btn.disabled = true;
-  btn.textContent = 'Checking…';
-  sendToHost('checkUpdates', {});
-};
-
-function onUpdateCheck(m) {
-  const btn = document.getElementById('btn-check-updates');
-  if (btn) { btn.disabled = false; btn.textContent = 'Check for updates'; }
-  if (!m) return;
-  if (m.kind === 'uptodate') {
-    alert("You're up to date. Running v" + (m.current || 'dev') + '.');
-  } else if (m.kind === 'newer') {
-    const want = confirm(
-      'ORBIT Connector v' + m.latest +
-      ' is available. You\'re running v' + (m.current || 'dev') + '.\n\n' +
-      'Open the releases page to download?'
-    );
-    if (want && m.url) sendToHost('openUrl', { url: m.url });
-  } else {
-    alert("Couldn't check for updates: " + (m.message || 'unknown error') + '. Try again later.');
-  }
-}
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 document.getElementById('btn-oauth').onclick = () => {
@@ -404,7 +362,8 @@ function buildCard(card) {
   wrap.className = 'card' + (ui.expanded ? ' expanded' : '');
   wrap.id = 'card-' + card.id;
 
-  const ago = card.lastSentAt ? timeAgo(card.lastSentAt) : '';
+  const lastActivity = card.type === 'send' ? card.lastSentAt : (card.lastReceivedAt || card.lastSentAt);
+  const ago = lastActivity ? timeAgo(lastActivity) : '';
 
   wrap.innerHTML = `
   <div class="card-header" onclick="toggleCard('${card.id}')">
@@ -761,6 +720,17 @@ function onSendErr(cardId, msg) {
   const btn = document.getElementById('action-btn-' + cardId);
   if (btn) btn.disabled = false;
 }
+function onReceiveOk(cardId, summary, warnings) {
+  const card = state.cards.find(c => c.id === cardId);
+  if (card) { card.lastReceivedAt = new Date().toISOString(); updateCardHeader(card); }
+  hideProgress(cardId);
+  showStatus(cardId, summary || '✓ Received', 'ok');
+  const btn = document.getElementById('action-btn-' + cardId);
+  if (btn) btn.disabled = false;
+  if (warnings && warnings.length > 0) {
+    console.warn('[ORBIT] receive warnings:', warnings);
+  }
+}
 // `persist=true` (the default) updates state.uiState so the progress
 // survives a renderCards() rebuild. bindCard() calls this with
 // persist=false when it's restoring previously-saved state — no need
@@ -810,7 +780,8 @@ function updateCardHeader(card) {
   const ago   = el.querySelector('.card-ago');
   if (title) title.textContent = card.projectName || (card.type==='send'?'New send':'New receive');
   if (sub)   sub.textContent   = card.modelName   || 'No model selected';
-  if (ago && card.lastSentAt) ago.textContent = timeAgo(card.lastSentAt);
+  const timestamp = card.type === 'send' ? card.lastSentAt : (card.lastReceivedAt || card.lastSentAt);
+  if (ago && timestamp) ago.textContent = timeAgo(timestamp);
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

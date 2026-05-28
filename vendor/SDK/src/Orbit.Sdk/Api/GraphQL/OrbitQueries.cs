@@ -90,7 +90,7 @@ public static class OrbitQueries
 
     public const string CreateVersion = @"
         mutation($input: CreateVersionInput!) {
-            versionMutations {
+            modelMutations {
                 create(input: $input) {
                     id
                     message

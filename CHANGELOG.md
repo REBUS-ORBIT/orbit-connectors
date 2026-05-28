@@ -11,6 +11,78 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.10 — Receive from ORBIT pipeline
+
+Adds **receive-from-ORBIT** functionality to the Rhino Connector. Users can now pull any
+ORBIT model version back into Rhino as native geometry with layers and materials intact.
+
+### New UI
+
+- **"+ Receive" button** in the panel toolbar creates a dedicated receive card.
+- Receive cards share the same project/model dropdowns as send cards.
+- Pressing **"Receive from ORBIT"** fetches the latest version (or the pinned version if
+  set on the card) and bakes it into the active Rhino document.
+- Progress is reported via the existing `showProgress`/`hideProgress` JS bridge:
+  downloading → walking object tree → baking geometry.
+- On success the card header shows a "✓ Received N object(s) into M layer(s)" status
+  with an elapsed-time ago-timestamp; warnings (skipped types) are logged to the Rhino
+  command window.
+
+### New files
+
+| File | Description |
+|---|---|
+| `Converters/FromOrbit/OrbitToRhinoConverter.cs` | Converts ORBIT `JObject` → Rhino `GeometryBase`. Dispatches on `speckle_type`. |
+| `Pipeline/RhinoReceivePipeline.cs` | Orchestrates: fetch version → download root → walk tree → resolve detached references → bake. |
+
+### Supported ORBIT object types (FromOrbit)
+
+| ORBIT type | Rhino result |
+|---|---|
+| `Objects.Geometry.Mesh` | `Rhino.Geometry.Mesh` (vertices, faces, normals, UVs, vertex colours) |
+| `Objects.Geometry.Brep` | `Rhino.Geometry.Brep` (from base64 `.3dm` payload) or display-mesh fallback |
+| `Objects.Data.DataObject:Objects.Data.RhinoObject` | Native decoded `.3dm` geometry (Brep, Extrusion, SubD, Surface, …) |
+| `Objects.Geometry.Line` | `LineCurve` |
+| `Objects.Geometry.Polyline` | `PolylineCurve` |
+| `Objects.Geometry.NurbsCurve` | `NurbsCurve` |
+| `Objects.Geometry.Arc` | `ArcCurve` |
+| `Objects.Geometry.Circle` | `ArcCurve` (full circle) |
+| `Objects.Geometry.Point` | `Point` |
+| Any type with `displayValue` | First mesh from `displayValue` |
+| Unknown / unsupported | Skipped with a warning |
+
+### Layer and material mapping
+
+- **Layer hierarchy**: `layerPath` from each ORBIT object (e.g. `"Parent::Child"`) is
+  recreated as a nested Rhino layer tree. Layers are created if they don't already exist.
+- **Layer colour**: `layerColor` (unsigned ARGB long) is applied to the leaf layer.
+- **Object colour**: `renderMaterial.diffuse` is applied to each object's `ObjectColor`
+  with `ColorFromObject` source so the viewport shows the model's material colours.
+- **Duplicate handling (v1)**: objects are added alongside existing ones; a warning is
+  logged. Delete-and-replace by `ORBIT_objectId` is deferred to a future version.
+- **Undo**: all baked objects are wrapped in a single undo record ("ORBIT Receive").
+
+### SDK additions (vendored in `vendor/SDK/src/`)
+
+The following types were added to the vendored SDK to unblock local builds:
+
+| Type | Namespace | Purpose |
+|---|---|---|
+| `Vector` | `Orbit.Objects.Geometry` | Camera direction vectors for `View3D` |
+| `View3D` | `Orbit.Objects.BuiltElements` | Named camera views |
+| `RenderMaterial` | `Orbit.Objects.Other` | Full PBR material (replaces the stub in `Proxies`) |
+| `RawEncoding` | `Orbit.Objects.Other` | Base64 binary payload container |
+| `RhinoDataObject` | `Orbit.Objects.Data` | Native Rhino object wrapper |
+| `OrbitBlobUploader` | `Orbit.Sdk.Transport` | Uploads texture files; returns server blob IDs |
+| `TextureBlobPatcher` | `Orbit.Sdk.Transport` | Patches `@blob:SHA256` → `@blob:serverBlobId` |
+
+`OrbitObject` gains `CollectionType`, `LayerPath`, `LayerColor`, proxy lists, and `Views`.
+`Mesh` and `Brep` gain `LayerPath`, `LayerColor`, `ColorSource` (and `Mesh` gains `RenderMaterial`).
+`Instance` gains `Name` and `Elements`.
+`OrbitClient` gains `AuthToken` and `CreateVersionAsync` gains `totalChildrenCount`.
+
+---
+
 ## v0.1.9 — Plugin branding: ORBIT logo and publisher metadata
 
 Populates the fields shown in Rhino's **Options → Plug-ins** list and

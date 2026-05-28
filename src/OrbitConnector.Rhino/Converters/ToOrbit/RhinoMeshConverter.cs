@@ -12,7 +12,6 @@ public class RhinoMeshConverter : IRhinoToOrbitConverter
     {
         var rhinoMesh = (Mesh)geometry;
 
-        // Ensure normals are computed
         if (rhinoMesh.Normals.Count == 0)
             rhinoMesh.Normals.ComputeNormals();
 
@@ -24,7 +23,6 @@ public class RhinoMeshConverter : IRhinoToOrbitConverter
             VertexNormals = new List<double>(rhinoMesh.Normals.Count * 3),
         };
 
-        // Vertices
         foreach (var v in rhinoMesh.Vertices)
         {
             mesh.Vertices.Add(v.X);
@@ -48,7 +46,6 @@ public class RhinoMeshConverter : IRhinoToOrbitConverter
             }
         }
 
-        // Normals
         foreach (var n in rhinoMesh.Normals)
         {
             mesh.VertexNormals.Add(n.X);
@@ -56,7 +53,8 @@ public class RhinoMeshConverter : IRhinoToOrbitConverter
             mesh.VertexNormals.Add(n.Z);
         }
 
-        // Vertex colours (ARGB int)
+        CopyTextureCoordinates(rhinoMesh, mesh, context);
+
         if (rhinoMesh.VertexColors.Count > 0)
         {
             mesh.Colors = rhinoMesh.VertexColors
@@ -64,6 +62,71 @@ public class RhinoMeshConverter : IRhinoToOrbitConverter
                 .ToList();
         }
 
+        // Material/colour. Read from the parent Rhino object via the
+        // conversion context — falls back to the layer colour when the
+        // object has no override and no assigned material.
+        AttachRenderMaterial(mesh, context);
+
         return mesh;
+    }
+
+    /// <summary>
+    /// Copy per-vertex UVs from the Rhino mesh, or backfill from the parent
+    /// object's render mesh when the tessellated mesh has none.
+    /// </summary>
+    public static void CopyTextureCoordinates(
+        Mesh rhinoMesh, OM.Mesh mesh, ConversionContext context)
+    {
+        if (TryExtractUvs(rhinoMesh, out var uvs))
+        {
+            mesh.TextureCoordinates = uvs;
+            return;
+        }
+
+        var obj = context.CurrentObject;
+        if (obj == null) return;
+
+        var renderMeshes = obj.GetMeshes(MeshType.Render);
+        if (renderMeshes == null || renderMeshes.Length == 0 || renderMeshes[0] == null)
+            return;
+
+        var rm = renderMeshes[0];
+        if (TryExtractUvs(rm, out uvs))
+            mesh.TextureCoordinates = uvs;
+    }
+
+    private static bool TryExtractUvs(Mesh rhinoMesh, out List<double> uvs)
+    {
+        uvs = new List<double>();
+        if (rhinoMesh.TextureCoordinates.Count == 0
+            || rhinoMesh.TextureCoordinates.Count != rhinoMesh.Vertices.Count)
+            return false;
+
+        uvs = new List<double>(rhinoMesh.TextureCoordinates.Count * 2);
+        foreach (var tc in rhinoMesh.TextureCoordinates)
+        {
+            uvs.Add(tc.X);
+            uvs.Add(tc.Y);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Attach an inline <c>renderMaterial</c> to a mesh based on the
+    /// <see cref="ConversionContext.CurrentObject"/>'s attributes.
+    /// Safe to call on display-mesh fragments (e.g. the meshes generated
+    /// by tessellating a Brep) — they pick up the same parent material.
+    /// </summary>
+    public static void AttachRenderMaterial(OM.Mesh mesh, ConversionContext context)
+    {
+        var material = context.BuildCurrentRenderMaterial();
+        if (material != null)
+            mesh.RenderMaterial = material;
+
+        var resolved = context.ResolveCurrentColor();
+        if (resolved.HasValue)
+        {
+            mesh.ColorSource = resolved.Value.source;
+        }
     }
 }

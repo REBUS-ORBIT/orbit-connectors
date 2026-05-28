@@ -8,12 +8,10 @@ namespace Orbit.Objects.BuiltElements;
 ///
 /// IMPORTANT: <c>speckle_type</c> is <c>Objects.BuiltElements.View.View3D</c> (note the extra
 /// <c>.View.</c> segment) — that is the exact value the Speckle/ORBIT viewer matches against
-/// when populating the named-views panel. The previous value (<c>Objects.BuiltElements.View3D</c>)
-/// caused all views to be silently dropped from the panel.
+/// when populating the named-views panel.
 ///
-/// Origin/target are <see cref="Point"/> objects (Speckle <c>Objects.Geometry.Point</c>);
-/// up/forward directions are <see cref="Vector"/> objects (<c>Objects.Geometry.Vector</c>).
-/// All four are stored inline inside the View3D — they are NOT detached to the closure table.
+/// Origin/target are <see cref="Point"/> objects; up/forward directions are <see cref="Vector"/>
+/// objects. All four are stored inline inside the View3D — they are NOT detached to the closure table.
 /// </summary>
 public class View3D : Base.OrbitBase
 {
@@ -36,9 +34,7 @@ public class View3D : Base.OrbitBase
     public Vector? UpDirection { get; set; }
 
     /// <summary>
-    /// Camera forward-direction vector (from camera toward target). Required by the viewer;
-    /// the previous implementation omitted this field, which prevented the saved-views panel
-    /// from positioning the camera correctly.
+    /// Camera forward-direction vector (from camera toward target).
     /// </summary>
     [JsonProperty("forwardDirection")]
     public Vector? ForwardDirection { get; set; }
@@ -48,8 +44,7 @@ public class View3D : Base.OrbitBase
     public bool IsOrthogonal { get; set; }
 
     /// <summary>
-    /// 35mm-equivalent lens length for perspective views (Rhino's <c>Camera35mmLensLength</c>),
-    /// or 0 for orthographic projections.
+    /// 35mm-equivalent lens length for perspective views, or 0 for orthographic.
     /// </summary>
     [JsonProperty("lens")]
     public double Lens { get; set; }
