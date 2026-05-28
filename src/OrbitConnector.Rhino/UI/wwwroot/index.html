@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -27,12 +27,12 @@
   html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;overflow-x:hidden}
   body{display:flex;flex-direction:column;height:100%}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Scrollbar Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Scrollbar -- */
   ::-webkit-scrollbar{width:4px}
   ::-webkit-scrollbar-track{background:var(--bg)}
   ::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:2px}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Header Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Header -- */
   #header{
     display:flex;align-items:center;justify-content:space-between;
     padding:12px 14px 10px;
@@ -63,7 +63,7 @@
   #btn-check-updates:hover{text-decoration:underline}
   #btn-check-updates:disabled{opacity:.5;cursor:default;text-decoration:none}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Buttons Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Buttons -- */
   .btn{
     display:inline-flex;align-items:center;justify-content:center;gap:5px;
     border:none;border-radius:6px;cursor:pointer;font-family:var(--font);
@@ -83,11 +83,11 @@
   .btn-icon:hover{background:var(--bg3);color:var(--text2)}
   .btn-sm{height:26px;padding:0 10px;font-size:11px;border-radius:5px}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Pages Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Pages -- */
   .page{display:none;flex-direction:column;flex:1;overflow:hidden}
   .page.active{display:flex}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Login page Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Login page -- */
   #page-login{padding:20px 16px;gap:14px;overflow-y:auto}
   .field-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
   .input{
@@ -106,7 +106,7 @@
   .divider{display:flex;align-items:center;gap:10px;color:var(--text3);font-size:11px}
   .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Main page Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Main page -- */
   #page-main{overflow:hidden}
   #account-bar{
     display:flex;align-items:center;justify-content:space-between;
@@ -122,7 +122,7 @@
   #empty-state{padding:28px 16px;text-align:center;color:var(--text3)}
   #empty-state p{line-height:1.5}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Card Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Card -- */
   .card{border-bottom:1px solid var(--border)}
   .card-header{
     display:flex;align-items:center;gap:0;
@@ -144,7 +144,7 @@
   .card-chevron{font-size:10px;color:var(--text3);transition:transform .15s;flex-shrink:0;width:12px;text-align:center}
   .card.expanded .card-chevron{transform:rotate(180deg)}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Card body Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Card body -- */
   .card-body{display:none;border-top:1px solid var(--border)}
   .card.expanded .card-body{display:block}
   .cb-section{border-bottom:1px solid var(--border)}
@@ -167,7 +167,7 @@
   .inline-new{display:flex;gap:6px;margin-top:6px}
   .inline-new .input{flex:1}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Layer list Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Layer list -- */
   .layer-list{
     max-height:160px;overflow-y:auto;background:var(--bg3);
     border:1px solid var(--border);border-radius:6px;
@@ -184,7 +184,7 @@
   .layer-mode-row label{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer}
   .layer-mode-row input[type=radio]{accent-color:var(--accent);cursor:pointer}
 
-  /* Ã¢â€â‚¬Ã¢â€â‚¬ Card footer Ã¢â€â‚¬Ã¢â€â‚¬ */
+  /* -- Card footer -- */
   .cb-footer{padding:12px 14px;border-top:1px solid var(--border)}
   .cb-status{padding:6px 14px 0;font-size:11px;display:none}
   .cb-status.show{display:block}
@@ -205,9 +205,9 @@
   <div id="header-left">
     <!--
       ORBIT logo, inlined as base64 to avoid the embedded-resource
-      resolution path inside Rhino's Eto WebView. The PNG is a 96Ãƒâ€”95
+      resolution path inside Rhino's Eto WebView. The PNG is a 96&times;95
       resize of src/OrbitConnector.Rhino/Resources/orbit-logo.png
-      (8.9 KB Ã¢â€ â€™ 12.0 KB base64). Bump together with the assembly logo
+      (8.9 KB &#x2192; 12.0 KB base64). Bump together with the assembly logo
       when the brand image changes.
     -->
     <img id="header-logo" alt="ORBIT"
@@ -218,7 +218,7 @@
     </div>
   </div>
   <div id="header-right">
-    <span id="version-label">vÃ¢â‚¬â€</span>
+    <span id="version-label">v&mdash;</span>
     <button id="btn-check-updates" type="button" title="Check GitHub for a newer connector release">Check for updates</button>
   </div>
 </div>
@@ -236,11 +236,11 @@
 
   <div class="login-section">
     <div class="field-label">Personal Access Token</div>
-    <input id="pat-input" class="input" type="password" placeholder="Paste tokenÃ¢â‚¬Â¦" spellcheck="false"/>
+    <input id="pat-input" class="input" type="password" placeholder="Paste token&hellip;" spellcheck="false"/>
     <button class="btn btn-ghost btn-sm" id="btn-pat" style="align-self:flex-start">Use Token</button>
   </div>
 
-  <div id="login-spinner"><div class="spinner"></div><span id="login-spinner-text">ConnectingÃ¢â‚¬Â¦</span></div>
+  <div id="login-spinner"><div class="spinner"></div><span id="login-spinner-text">Connecting&hellip;</span></div>
   <div id="login-error"></div>
 </div>
 
@@ -248,8 +248,8 @@
 <div id="page-main" class="page">
   <div id="account-bar">
     <div>
-      <div id="account-name">Ã¢â‚¬â€</div>
-      <div id="account-server">Ã¢â‚¬â€</div>
+      <div id="account-name">&mdash;</div>
+      <div id="account-server">&mdash;</div>
     </div>
     <button class="btn btn-ghost btn-sm" id="btn-logout">Sign out</button>
   </div>
@@ -265,7 +265,7 @@
 </div>
 
 <script>
-// Ã¢â€â‚¬Ã¢â€â‚¬ State Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- State --------------------------------------------------------------------
 const state = {
   user: null,
   serverUrl: '',
@@ -274,7 +274,7 @@ const state = {
   models: {},      // {cardId: [{id,name}]}
   layers: [],      // [{fullPath,name,depth}] - from active Rhino doc
   // Per-card transient UI state. Never cleared by onCards() so it
-  // survives every full renderCards() DOM rebuild Ã¢â‚¬â€ that's what keeps
+  // survives every full renderCards() DOM rebuild \u2014 that's what keeps
   // the project/model dropdowns populated, the upload progress visible,
   // and the expanded/collapsed state correct when the user switches
   // panel tabs in Rhino and comes back.
@@ -285,13 +285,13 @@ function getCardUi(cardId) {
   return state.uiState[cardId];
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Bridge to C# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Bridge to C# -------------------------------------------------------------
 function sendToHost(action, data) {
   const params = encodeURIComponent(JSON.stringify(data || {}));
   try { window.location.href = `orbit://msg/${action}?d=${params}`; } catch(e) {}
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Called BY C# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Called BY C# -------------------------------------------------------------
 window.orbitReceive = function(msg) {
   const m = JSON.parse(msg);
   switch (m.type) {
@@ -314,7 +314,7 @@ window.orbitReceive = function(msg) {
   }
 };
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Version + update check (v0.1.2 / restored in v0.1.8 / v0.1.11) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Version + update check (v0.1.2 / restored in v0.1.8 / v0.1.11) -----------
 function onVersion(version) {
   const lbl = document.getElementById('version-label');
   if (lbl) lbl.textContent = 'v' + (version || 'dev');
@@ -324,7 +324,7 @@ document.getElementById('btn-check-updates').onclick = () => {
   const btn = document.getElementById('btn-check-updates');
   if (!btn || btn.disabled) return;
   btn.disabled = true;
-  btn.textContent = 'CheckingÃ¢â‚¬Â¦';
+  btn.textContent = 'Checking\u2026';
   sendToHost('checkUpdates', {});
 };
 
@@ -346,11 +346,11 @@ function onUpdateCheck(m) {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Login Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Login ---------------------------------------------------------------------
 document.getElementById('btn-oauth').onclick = () => {
   const url = document.getElementById('server-url').value.trim();
   if (!url) return;
-  setLoginBusy('Opening browserÃ¢â‚¬Â¦');
+  setLoginBusy('Opening browser\u2026');
   sendToHost('login', { url, method: 'oauth' });
 };
 
@@ -358,7 +358,7 @@ document.getElementById('btn-pat').onclick = () => {
   const url = document.getElementById('server-url').value.trim();
   const pat = document.getElementById('pat-input').value.trim();
   if (!url || !pat) return;
-  setLoginBusy('Validating tokenÃ¢â‚¬Â¦');
+  setLoginBusy('Validating token\u2026');
   sendToHost('login', { url, method: 'pat', token: pat });
 };
 
@@ -403,7 +403,7 @@ function onLogout() {
   showPage('login');
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Cards Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Cards ---------------------------------------------------------------------
 function onCards(items) {
   // Normalise type to lowercase so all comparisons are consistent
   state.cards = (items || []).map(c => ({ ...c, type: String(c.type).toLowerCase() }));
@@ -445,8 +445,8 @@ function buildCard(card) {
       <button class="btn ${isSend ? 'btn-primary' : 'btn-recv'} btn-sm"
         onclick="event.stopPropagation();doAction('${card.id}')"
       >${isSend ? 'Send' : 'Receive'}</button>
-      <button class="btn btn-icon" onclick="event.stopPropagation();removeCard('${card.id}')" title="Remove">Ãƒâ€”</button>
-      <span class="card-chevron">Ã¢â€“Â¼</span>
+      <button class="btn btn-icon" onclick="event.stopPropagation();removeCard('${card.id}')" title="Remove">\u00d7</button>
+      <span class="card-chevron">\u25bc</span>
     </div>
   </div>
   <div class="card-body">
@@ -465,18 +465,18 @@ function buildCardBody(card) {
     <div class="cb-section-header">
       <span class="cb-section-label">Project</span>
       <div class="cb-section-actions">
-        <button class="btn btn-icon" onclick="refreshProjects('${card.id}')" title="Refresh">Ã¢â€ Â»</button>
+        <button class="btn btn-icon" onclick="refreshProjects('${card.id}')" title="Refresh">\u21bb</button>
         <button class="btn btn-icon" onclick="toggleNewProj('${card.id}')" title="New project">+</button>
       </div>
     </div>
     <div class="cb-content">
       <select class="select" id="proj-${card.id}" onchange="onProjChange('${card.id}')">
-        <option value="">LoadingÃ¢â‚¬Â¦</option>
+        <option value="">Loading\u2026</option>
       </select>
       <div id="new-proj-${card.id}" class="inline-new" style="display:none">
         <input class="input" id="new-proj-name-${card.id}" placeholder="Project name" style="font-size:12px"/>
         <button class="btn btn-primary btn-sm" onclick="createProject('${card.id}')">Create</button>
-        <button class="btn btn-icon" onclick="toggleNewProj('${card.id}')">Ãƒâ€”</button>
+        <button class="btn btn-icon" onclick="toggleNewProj('${card.id}')">\u00d7</button>
       </div>
     </div>
   </div>
@@ -485,7 +485,7 @@ function buildCardBody(card) {
     <div class="cb-section-header">
       <span class="cb-section-label">Model</span>
       <div class="cb-section-actions">
-        <button class="btn btn-icon" onclick="refreshModels('${card.id}')" title="Refresh">Ã¢â€ Â»</button>
+        <button class="btn btn-icon" onclick="refreshModels('${card.id}')" title="Refresh">\u21bb</button>
         <button class="btn btn-icon" onclick="toggleNewModel('${card.id}')" title="New model">+</button>
       </div>
     </div>
@@ -495,7 +495,7 @@ function buildCardBody(card) {
       </select>
       <div id="new-mdl-${card.id}" class="inline-new" style="display:none">
         <input class="input" id="new-mdl-name-${card.id}" placeholder="Model name" style="font-size:12px"/>
-        <button class="btn btn-icon" onclick="toggleNewModel('${card.id}')">Ãƒâ€”</button>
+        <button class="btn btn-icon" onclick="toggleNewModel('${card.id}')">\u00d7</button>
       </div>
     </div>
   </div>
@@ -510,7 +510,7 @@ function buildCardBody(card) {
   <div class="progress-bar" id="prog-bar-${card.id}"><div class="progress-fill" id="prog-fill-${card.id}"></div></div>
   <div class="cb-status" id="status-${card.id}"></div>
   <div class="open-link" id="open-link-${card.id}">
-    <button class="btn btn-link btn-sm" onclick="openResult('${card.id}')">Ã¢â€ â€” Open in ORBIT</button>
+    <button class="btn btn-link btn-sm" onclick="openResult('${card.id}')">\u2197 Open in ORBIT</button>
   </div>`;
 }
 
@@ -534,7 +534,7 @@ function buildLayerSection(card) {
         <label><input type="radio" name="lm-${card.id}" value="selection" ${mode==='selection'?'checked':''} onchange="onLayerModeChange('${card.id}','selection')"> Selection</label>
       </div>
       <div id="capture-row-${card.id}" style="${mode==='selection'?'':'display:none'};margin-top:6px;display:${mode==='selection'?'flex':'none'};gap:8px;align-items:center">
-        <button class="btn btn-ghost btn-sm" onclick="captureSelection('${card.id}')">Ã°Å¸â€œÅ’ Capture current selection</button>
+        <button class="btn btn-ghost btn-sm" onclick="captureSelection('${card.id}')">\ud83d\udccc Capture current selection</button>
         <span id="capture-count-${card.id}" style="font-size:11px;color:var(--text3)">${(card.selectedObjectIds||[]).length > 0 ? (card.selectedObjectIds.length)+' objects' : 'None captured'}</span>
       </div>
       <div id="layer-list-${card.id}" style="${mode==='bylayer'?'':'display:none'}">
@@ -564,7 +564,7 @@ function bindCard(card) {
   }
 
   // Model dropdown: same idea. If we have a projectId but no cached
-  // models, fetch Ã¢â‚¬â€ onModels will then re-select card.modelId.
+  // models, fetch \u2014 onModels will then re-select card.modelId.
   if (state.models[card.id]) {
     populateMdlCombo(card.id, state.models[card.id], card.modelId);
   } else if (card.projectId) {
@@ -598,7 +598,7 @@ function bindCard(card) {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Card interactions Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Card interactions ---------------------------------------------------------
 function toggleCard(cardId) {
   const el = document.getElementById('card-' + cardId);
   const expanded = el.classList.toggle('expanded');
@@ -630,10 +630,10 @@ function doAction(cardId) {
   });
   const btn = document.getElementById('action-btn-' + cardId);
   if (btn) btn.disabled = true;
-  showProgress(cardId, card.type === 'send' ? 'PreparingÃ¢â‚¬Â¦' : 'FetchingÃ¢â‚¬Â¦', 0);
+  showProgress(cardId, card.type === 'send' ? 'Preparing\u2026' : 'Fetching\u2026', 0);
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Project / Model Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Project / Model -----------------------------------------------------------
 function refreshProjects(cardId) {
   sendToHost('getProjects', { cardId });
 }
@@ -680,13 +680,13 @@ function onModels(cardId, items) {
 function populateProjCombo(cardId, items, selectedId) {
   const sel = document.getElementById('proj-' + cardId);
   if (!sel) return;
-  sel.innerHTML = '<option value="">Select projectÃ¢â‚¬Â¦</option>' +
+  sel.innerHTML = '<option value="">Select project\u2026</option>' +
     items.map(p => `<option value="${p.id}" ${p.id===selectedId?'selected':''}>${esc(p.name)}</option>`).join('');
 }
 function populateMdlCombo(cardId, items, selectedId) {
   const sel = document.getElementById('mdl-' + cardId);
   if (!sel) return;
-  sel.innerHTML = '<option value="">Select modelÃ¢â‚¬Â¦</option>' +
+  sel.innerHTML = '<option value="">Select model\u2026</option>' +
     items.map(m => `<option value="${m.id}" ${m.id===selectedId?'selected':''}>${esc(m.name)}</option>`).join('');
 }
 function toggleNewProj(cardId) {
@@ -708,7 +708,7 @@ function createProject(cardId) {
   toggleNewProj(cardId);
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Layers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Layers --------------------------------------------------------------------
 function onLayers(layers) {
   state.layers = layers;
   // refresh layer lists for expanded cards
@@ -765,7 +765,7 @@ function selectAllLayers(cardId, all) {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Progress / Status Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Progress / Status ---------------------------------------------------------
 function onProgress(cardId, status, percent) {
   showProgress(cardId, status, percent);
 }
@@ -775,7 +775,7 @@ function onSendOk(cardId, versionId, url) {
   const ui = getCardUi(cardId);
   ui.resultUrl = url || '';
   hideProgress(cardId);
-  showStatus(cardId, 'Ã¢Å“â€œ Version created', 'ok');
+  showStatus(cardId, '\u2713 Version created', 'ok');
   const openLink = document.getElementById('open-link-' + cardId);
   if (openLink) { openLink.dataset.url = url || ''; openLink.classList.add('show'); }
   const btn = document.getElementById('action-btn-' + cardId);
@@ -792,7 +792,7 @@ function onReceiveOk(cardId, summary, warnings) {
   const card = state.cards.find(c => c.id === cardId);
   if (card) { card.lastReceivedAt = new Date().toISOString(); updateCardHeader(card); }
   hideProgress(cardId);
-  showStatus(cardId, summary || 'Ã¢Å“â€œ Received', 'ok');
+  showStatus(cardId, summary || '\u2713 Received', 'ok');
   const btn = document.getElementById('action-btn-' + cardId);
   if (btn) btn.disabled = false;
   if (warnings && warnings.length > 0) {
@@ -801,7 +801,7 @@ function onReceiveOk(cardId, summary, warnings) {
 }
 // `persist=true` (the default) updates state.uiState so the progress
 // survives a renderCards() rebuild. bindCard() calls this with
-// persist=false when it's restoring previously-saved state Ã¢â‚¬â€ no need
+// persist=false when it's restoring previously-saved state \u2014 no need
 // to write the same values back to state in that case.
 function showProgress(cardId, status, percent, persist = true) {
   if (persist) {
@@ -852,7 +852,7 @@ function updateCardHeader(card) {
   if (ago && timestamp) ago.textContent = timeAgo(timestamp);
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Utilities Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Utilities -----------------------------------------------------------------
 function showPage(page) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
@@ -868,7 +868,7 @@ function timeAgo(iso) {
   return Math.floor(d/86400) + 'd ago';
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Init Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Init ----------------------------------------------------------------------
 sendToHost('ready', {});
 </script>
 </body>

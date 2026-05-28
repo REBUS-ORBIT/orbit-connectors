@@ -11,6 +11,338 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.14 — Fix receive of PRISM / monorepo-SDK uploads ("0 children")
+
+**Symptom.** After installing `v0.1.13`, opening **Receive from ORBIT**
+on a model uploaded by PRISM (3DM, FBX, OBJ, GLB, ZIP-bundle, etc.)
+silently bakes nothing. The diagnostic log shows the API call
+succeeded — every referenced object was downloaded from the server
+(e.g. `[ORBIT] receive: fetched 42 object(s) from server`) — and the
+root object is the expected `Speckle.Core.Models.Collections.Collection`
+with the model name on it, but the next log line is
+`[ORBIT] traverse: collection type='Speckle.Core.Models.Collections.Collection' name='<model>' has 0 children`
+and the receive completes with `baked 0 object(s) into 0 layer(s)`.
+
+A model uploaded via the connector's own **Send to ORBIT** flow against
+the same project receives correctly. Both upload paths produce the same
+`speckle_type`, both pass through the same ORBIT server, and both store
+under the same project — but the resulting wire JSON differs on a single
+character that v0.1.13's receive pipeline does not handle.
+
+### Root cause
+
+The Speckle/ORBIT wire format detaches collection children: each item
+inside `elements` is stored as its own object and replaced inline with a
+`{"referencedId":"…","speckle_type":"reference"}` stub. The serialiser
+indicates "this property is detached" by prefixing the JSON property
+name with `@`. The two ORBIT SDKs in production today disagree on
+whether to apply the prefix:
+
+| Sender                                | JSON property name              |
+|---------------------------------------|---------------------------------|
+| Rhino connector (vendored SDK)        | `elements`                      |
+| PRISM agent + monorepo SDK            | `@elements`                     |
+| PRISM agent + monorepo SDK (RhinoDataObject) | `@rawEncoding`, `@displayValue` |
+| PRISM agent + monorepo SDK (DefinitionProxy) | `@objects`                      |
+
+The ORBIT server stores whatever the sender posted **as-is** — it does
+NOT strip the `@` prefix during persistence — so a receive that looks
+only at the bare name silently drops every PRISM-uploaded payload.
+
+`RhinoReceivePipeline.IsCollection` / `EnumerateCollectionChildren` /
+`TraverseAndBakeChild` (v0.1.13) all looked for `elements` / `displayValue`
+/ `data` / `children` / `objects` / `rawEncoding` only. `OrbitToRhinoConverter`
+similarly looked only at `displayValue` and `rawEncoding` on every
+sub-object it walked. PRISM-uploaded payloads matched none of these,
+so the BFS produced an empty child enumeration and the bake count was
+zero.
+
+This was verified by fetching the raw wire JSON from
+`GET /objects/{streamId}/{objectId}/single` against the actual failing
+model. The connector-uploaded root shows `"elements":[…]`; the
+PRISM-uploaded root shows `"@elements":[…]` — confirmed identical
+otherwise.
+
+### Fix
+
+For every detachable property the receive pipeline looks at, also try
+the `@`-prefixed variant. Normalise back to the bare name once the
+stub is resolved so the converter sees a single uniform shape.
+
+- `Pipeline/RhinoReceivePipeline.cs`
+  - `IsCollection` and `EnumerateCollectionChildren` now probe both
+    `elements`/`@elements`, `displayValue`/`@displayValue`,
+    `data`/`@data`, `children`/`@children`, `objects`/`@objects`.
+  - `TraverseAndBakeChild` resolves `rawEncoding` / `@rawEncoding` and
+    `displayValue` / `@displayValue` via two new helpers
+    (`TryResolveDetachedSingle`, `TryResolveDetachedArray`) that always
+    emit the inlined value under the bare property name.
+  - Adds an `@`-prefix hit counter. At the end of every receive that
+    crossed at least one detached field, the pipeline writes a single
+    diagnostic summary line of the form
+    `[ORBIT] traverse: resolved 2 \`@\`-prefixed detached properties (@elements=5, @displayValue=13) — payload uses Speckle detach convention (PRISM / monorepo SDK shape).`
+    so the next failure is debuggable without re-reproducing.
+
+- `Converters/FromOrbit/OrbitToRhinoConverter.cs`
+  - `HasNativePayload` and `TryDecodeNativeAny` accept either
+    `rawEncoding` or `@rawEncoding` on the leaf JSON.
+  - `EnumerateDisplayValueItems` accepts either `displayValue` or
+    `@displayValue`. Defensive — the upstream pipeline normalises
+    these before calling the converter, but nested converters
+    (`ConvertPolyCurve` segments, Brep display-mesh fallback recursion)
+    re-enter `Convert` with un-normalised payloads.
+
+### Validation
+
+Built against the three roots from the bug report
+(`https://orbit.rebus.industries/projects/932088aa79/models/...`):
+
+- `prism 3dm` (PRISM 3DM upload, 42 objects, 6 layer collections):
+  v0.1.13 baked 0, v0.1.14 walks the `@elements` chain end-to-end.
+- `fbx test` (PRISM FBX upload, 3 objects, 1 layer): same — v0.1.13
+  reported 0 children, v0.1.14 finds and bakes the single nested
+  layer's mesh.
+- `rhino connector` (Rhino connector upload, 45 objects, 6 layers):
+  unchanged — already received correctly under v0.1.13 because the
+  connector-vendored SDK writes the bare `elements` name; v0.1.14
+  takes the same code path with no diff in behaviour.
+
+### Out of scope
+
+The two SDKs are intentionally left out of lockstep here. Aligning
+them (either by stripping `@` on the server during persistence, or by
+switching the connector's vendored SDK to also use `@elements`) is a
+breaking-on-the-wire change that would have to be coordinated with
+every existing project's stored objects — beyond the scope of a
+receive-side hotfix. The receive pipeline now tolerates both shapes
+indefinitely, and the per-receive `@`-prefix summary line gives the
+operator a one-glance view of which shape any given model uses.
+
+## v0.1.13 — Fix panel UI mojibake + receive baking edge cases
+
+Two follow-on bugs reported on top of the `v0.1.12` release shipped to PC01
+on the same evening. Both surface in the same workflow (open ORBIT panel,
+press **Receive from ORBIT** on a model produced by something other than
+the Rhino connector itself) and are addressed in one coordinated patch
+release.
+
+### Bug 1: panel UI shows mojibake / garbled glyphs
+
+**Symptom.** After installing `v0.1.12`, the Rhino panel rendered the
+section dividers, the version separator (`v—`), the `…` placeholders,
+the `×` close glyphs, the `↻` refresh icons, the `✓` success ticks, and
+the `↗` "Open in ORBIT" arrow as multi-character mojibake (`Ã¢€` /
+`â€¦` / `Ã—` runs). The header logo and the rest of the panel layout
+worked correctly; only the bare text glyphs were broken.
+
+**Root cause.** Two compounding issues:
+
+1. The `v0.1.12` `src/OrbitConnector.Rhino/UI/wwwroot/index.html` blob
+   on disk was double-mojibaked: the original UTF-8 bytes for the
+   decorative Unicode glyphs (`U+2500` box drawing, `U+2026` ellipsis,
+   `U+2014` em-dash, `U+00D7` multiplication sign, `U+21BB` refresh
+   arrow, `U+2713` check, `U+2197` north-east arrow, `U+1F4CC`
+   pushpin) had been re-saved twice as Windows-1252-misread-as-UTF-8.
+   Recovering the canonical text required two inverse passes through
+   the cp1252-then-UTF-8 chain. (Verified by hex-inspecting the
+   committed blob: every `U+2500 ─` showed up as the unmistakable
+   8-byte `C3 A2 E2 80 9D E2 82 AC` sequence after re-encoding.)
+2. Rhino's Eto `WebView` on Windows uses the legacy IE/MSHTML
+   rendering host for `file://` URLs. That host **ignores** the
+   `<meta charset="utf-8">` hint inside `<head>` for local files and
+   falls back to the system ANSI code page (Windows-1252 on Western
+   installs). With no BOM and no HTTP `Content-Type` charset header,
+   any UTF-8 byte in the file is decoded as cp1252, which is what the
+   user-visible mojibake is. The `<meta>` tag only takes effect once
+   the document's charset has already been guessed -- it's a hint,
+   not an authoritative source.
+
+**Fix (belt-and-braces).**
+
+- `src/OrbitConnector.Rhino/UI/wwwroot/index.html` is rewritten to
+  pure ASCII. Every non-ASCII glyph is replaced with the appropriate
+  encoding-independent form depending on its host language:
+
+  | Glyph          | HTML body context        | JavaScript string context |
+  |----------------|--------------------------|---------------------------|
+  | `─` (U+2500)   | ASCII `-` (decorative)   | ASCII `-` (decorative)    |
+  | `…` (U+2026)   | `&hellip;`               | `\u2026`                  |
+  | `—` (U+2014)   | `&mdash;`                | `\u2014`                  |
+  | `×` (U+00D7)   | `&times;`                | `\u00d7`                  |
+  | `↻` (U+21BB)   | `&#x21BB;`               | `\u21bb`                  |
+  | `✓` (U+2713)   | `&#x2713;`               | `\u2713`                  |
+  | `▼` (U+25BC)   | `&#x25BC;`               | `\u25bc`                  |
+  | `↗` (U+2197)   | `&#x2197;`               | `\u2197`                  |
+  | `📌` (U+1F4CC)  | `&#x1F4CC;`              | `\uD83D\uDCCC` (surrogates)|
+
+  The script-region replacement lands inside JavaScript string literals,
+  where `\uXXXX` escapes are parsed by the JS engine and produce the
+  same runtime characters whether the resulting string is later
+  assigned to `.textContent`, `.innerHTML`, or stamped into a template
+  literal -- no HTML-entity-decoding step required. The HTML body
+  region uses named / numeric entities instead so the parser's
+  decoding step renders them.
+
+  CSS / JS comments (the section divider runs `── Header ──`,
+  `── Card body ──`, etc.) are decorative and replaced with ASCII
+  `--` runs; comment glyphs are never user-visible.
+
+- `src/OrbitConnector.Rhino/UI/wwwroot/index.html` now also ships with
+  a **UTF-8 BOM** (`EF BB BF`). With the file otherwise ASCII-only,
+  the BOM is the only non-ASCII bytes; modern browsers (and the
+  `IE/MSHTML` fallback host) treat a leading UTF-8 BOM as an
+  authoritative charset declaration that overrides any locale-based
+  guess.
+
+- `src/OrbitConnector.Rhino/UI/OrbitEtoPanel.cs#LoadHtml()` is
+  updated to read the embedded resource via
+  `new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true)`
+  and write the temp file via
+  `new UTF8Encoding(encoderShouldEmitUTF8Identifier: true)`. This
+  forces an explicit UTF-8 round-trip with BOM regardless of the
+  default `Encoding.Default` on the host machine. A failure here is
+  also now logged via `RhinoApp.WriteLine` instead of being silently
+  swallowed (the v0.1.12 `catch { }` masked load errors during the
+  bug investigation).
+
+| File | Change |
+|---|---|
+| `src/OrbitConnector.Rhino/UI/wwwroot/index.html` | Rewritten to pure ASCII + UTF-8 BOM. Region-aware non-ASCII glyph replacement: HTML entities in body, `\uXXXX` escapes in JS, ASCII in comments. Functionally identical to v0.1.12 -- no UI / behavioural changes. |
+| `src/OrbitConnector.Rhino/UI/OrbitEtoPanel.cs` | `LoadHtml()` forces `Encoding.UTF8` on read and `UTF8Encoding(true)` (with BOM) on write. Logs failures instead of swallowing. |
+
+### Bug 2: receive bakes wrong / missing geometry
+
+**Symptom.** After the `v0.1.12` receive rewrite (`RhinoReceivePipeline`
++ `OrbitToRhinoConverter`), pressing **Receive from ORBIT** on a
+real-world model often produced fewer baked objects than expected,
+incorrect layer hierarchies, or empty results -- with no console error.
+The `v0.1.12` rewrite had unblocked the "no root elements" failure
+mode but the per-leaf conversion path was thinner than the
+range of object shapes the live ORBIT server returns.
+
+**Root cause** (multiple). The `v0.1.12` converter and pipeline together
+mishandled four classes of payload:
+
+1. **Native-payload location varies by sender.** The Speckle Rhino
+   connector emits the base64 `.3dm` payload under
+   `obj["encoded"]`, the Speckle Python / `Objects.Other.RawEncoding`
+   sender uses `obj["rawEncoding"]["contents"]`, and a couple of
+   PRISM staging payloads use `obj["encodedValue"]`. The v0.1.12
+   converter only read `encoded`; the other two paths fell through
+   to the display-mesh branch (or `null` for Surface / SubD / Extrusion
+   which had no fallback).
+2. **Type coverage was narrow.** `Objects.Geometry.Surface`,
+   `Objects.Geometry.SubD`, `Objects.Geometry.Extrusion`,
+   `Objects.Geometry.PolyCurve`, `Objects.Geometry.Curve`,
+   `Objects.Geometry.Ellipse`, `Objects.Geometry.PointCloud` were all
+   missing from the dispatch switch. They fell through to the
+   `displayValue` fallback which itself only handled `Mesh` -- so a
+   model containing a real-world mix of Breps, polycurves, and
+   point clouds would silently drop everything except meshes and
+   trimmed surfaces.
+3. **`displayValue` may be a single `JObject`, not just a `JArray`.**
+   Some Speckle Python variants emit `displayValue: { ... mesh ... }`
+   without wrapping in an array. The v0.1.12 converter cast to
+   `JArray` and returned `null` on the unwrapped form.
+4. **`referencedId` stubs of stubs.** The pipeline's `ResolveStub`
+   followed exactly one level of indirection. A handful of legacy
+   3DConvert payloads emit a stub that points to another stub; those
+   geometry leaves were dropped one level shy of resolving.
+5. **Layer-path separators.** PRISM and 3DConvert emit `layerPath`
+   values delimited by `/` (forward slash), but the v0.1.12
+   `EnsureLayer` only split on `::`. The whole path landed as a
+   single layer name like `Project A/Building 02/Storey 1` instead of
+   a 3-level Rhino layer hierarchy.
+6. **Loose collection child enumeration.** The v0.1.12 traversal
+   only walked `elements` and `displayValue`. Speckle's `Collection`
+   and `Organization.Model` types in the wild also pack children
+   under `data`, `children`, or `objects`; those nodes got treated
+   as leaves and silently dropped.
+
+**Fix.**
+
+- `OrbitToRhinoConverter` (rewrite):
+  - Type dispatch extended to `Surface` / `SubD` / `Extrusion` /
+    `PointCloud` / `PolyCurve` / `Curve` / `Ellipse`. All four
+    "Brep-like" types share a single `ConvertBrepFallback` that tries
+    `encoded` -> `encodedValue` -> `rawEncoding.contents` and falls
+    through to a merged display-mesh union if no native payload is
+    present. `PolyCurve` recursively converts its `segments` and
+    appends them into a Rhino `PolyCurve`. `PointCloud` reads the
+    flat `points` array and optional per-point `colors`. `Ellipse`
+    reads `firstRadius` / `secondRadius` (or the legacy `radius1` /
+    `radius2`) and emits an ellipse `NurbsCurve`.
+  - `HasNativePayload` short-circuits the type dispatch when ANY
+    object carries a base64 `.3dm` payload, regardless of the
+    declared `speckle_type`. Native round-trip wins over any
+    convert-from-JSON path.
+  - `EnumerateDisplayValueItems` accepts both `JArray` and `JObject`
+    forms of `displayValue` so the single-object variant senders no
+    longer drop leaves.
+  - `Mesh` face decoder gains explicit n-gon fan-triangulation for
+    `n > 4`. v0.1.12 advanced the cursor past n-gon faces but
+    skipped them entirely; the new path emits `n - 2` triangles per
+    n-gon so the user sees the geometry instead of holes.
+  - Per-conversion `Verbose` diagnostic line via
+    `RhinoApp.WriteLine` (`[ORBIT] convert: type='Objects.Geometry.Brep' id=... -> Brep`).
+    Skipped objects log the reason and are visible in the Rhino
+    command window so the next bug report can quote actual data.
+- `RhinoReceivePipeline`:
+  - `ResolveStub` now follows the `referencedId` chain up to 8 hops
+    (cycle-bounded). Most chains are length 1; the bound is wide
+    enough to handle the worst legacy payloads without risk.
+  - Collection child enumeration walks `elements`, `displayValue`,
+    `data`, `children`, AND `objects` (in that order, deterministic).
+    `displayValue` is suppressed for known geometry leaves (the
+    `Objects.Geometry.*` and `RhinoObject` types) so a Brep with a
+    display-mesh array does not get re-walked as a collection.
+  - `NormaliseLayerPath` maps `/`, `\\`, and `::` separators onto
+    Rhino's `::` form (with whitespace + empty-segment cleanup).
+    Applied to both the leaf's own `layerPath` and to the chain
+    inherited from enclosing collection `name`s. PRISM and
+    3DConvert payloads now bake into proper nested layers.
+  - `BakeLeaf` stamps `attrs.SetUserString("ORBIT_objectId", id)` on
+    every baked Rhino object so a future delete-and-replace receive
+    can find the previously-baked geometry by stable id. Also
+    detects the `RhinoDoc.Objects.Add` -> `Guid.Empty` failure mode
+    (Rhino refused the geometry) and surfaces it as a warning instead
+    of silently incrementing the count.
+  - `ApplyMaterialColor` is unchanged but now runs after the
+    diagnostic line, so a colour-application failure is visible in
+    the same scan as the bake decision.
+  - Per-leaf and per-collection diagnostic lines via
+    `RhinoApp.WriteLine` cover every traversal decision: collection
+    type + name + child count, leaf type + id + target layer +
+    Rhino geometry kind, skip reason. The receive path's existing
+    summary log line at the end now also reports `skipped=N`.
+
+| File | Change |
+|---|---|
+| `src/OrbitConnector.Rhino/Converters/FromOrbit/OrbitToRhinoConverter.cs` | Full rewrite. Extended type dispatch (Surface / SubD / Extrusion / PolyCurve / Curve / Ellipse / PointCloud); `HasNativePayload` short-circuit; multi-location native-payload decoder (`encoded`, `encodedValue`, `rawEncoding.contents`); `JArray`/`JObject` `displayValue` support; n-gon fan triangulation; per-conversion `Verbose` diagnostic logging. |
+| `src/OrbitConnector.Rhino/Pipeline/RhinoReceivePipeline.cs` | Recursive `ResolveStub` (up to 8 hops). `NormaliseLayerPath` handles `/`, `\\`, `::`. `IsCollection` + `EnumerateCollectionChildren` walk `elements` / `displayValue` / `data` / `children` / `objects` with leaf-detection guard. `BakeLeaf` stamps `ORBIT_objectId` user string and checks the `Objects.Add` return. Per-decision `RhinoApp.WriteLine` diagnostics. Summary line includes `skipped=N`. |
+
+### What is **not** changed
+
+- The send pipeline (`RhinoSendPipeline`, every `Converters/ToOrbit/*`
+  converter, the SDK transport plumbing). `v0.1.12` and earlier
+  produced send payloads the new receive path also handles correctly,
+  and round-tripping a model from Rhino to ORBIT and back through this
+  build is verified to preserve geometry / layers / materials.
+- The plug-in metadata, panel registration, panel-rail icon,
+  WebView panel UI scaffolding, login / OAuth / PAT flow, version
+  label, "Check for updates" link, the diagnostic `load.log` writer,
+  and every installer registry / path behaviour from `v0.1.5`
+  onwards.
+- The vendored SDK under `vendor/SDK/`. No transport-level changes
+  needed; the bug was entirely in the connector's tree-walk + leaf
+  conversion logic.
+- Inno Setup script and YAK manifest. The CI release pipeline in
+  `.github/workflows/release.yml` extracts this section by tag,
+  re-stamps the version through `Directory.Build.props`, and rebuilds
+  the same `.yak` + `.exe` artefact set v0.1.12 shipped.
+
+---
+
 ## v0.1.12 — Fix receive ("Root object has no elements") + panel logo (UI + rail icon)
 
 Two unrelated bugs reported on top of `v0.1.11` are addressed in one

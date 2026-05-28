@@ -2,7 +2,6 @@ using Newtonsoft.Json.Linq;
 using Rhino;
 using Rhino.FileIO;
 using Rhino.Geometry;
-using OM = Orbit.Objects.Geometry;
 using Orbit.Sdk.Serialisation;
 
 namespace OrbitConnector.Rhino.Converters.FromOrbit;
@@ -13,22 +12,48 @@ namespace OrbitConnector.Rhino.Converters.FromOrbit;
 ///
 /// Dispatch is on <c>speckle_type</c>:
 /// <list type="bullet">
-///   <item><c>Objects.Geometry.Mesh</c>         → <see cref="Mesh"/></item>
-///   <item><c>Objects.Geometry.Brep</c>         → display-mesh fallback (v1)</item>
-///   <item><c>Objects.Geometry.Line</c>         → <see cref="LineCurve"/></item>
-///   <item><c>Objects.Geometry.Polyline</c>     → <see cref="PolylineCurve"/></item>
-///   <item><c>Objects.Geometry.NurbsCurve</c>   → <see cref="NurbsCurve"/></item>
-///   <item><c>Objects.Geometry.Arc</c>          → <see cref="ArcCurve"/></item>
-///   <item><c>Objects.Geometry.Circle</c>       → <see cref="ArcCurve"/> (full)</item>
-///   <item><c>Objects.Geometry.Point</c>        → <see cref="Point"/></item>
-///   <item>Contains <c>"RhinoObject"</c>        → decoded native .3dm geometry</item>
-///   <item>Collection/wrapper with displayValue → mesh from displayValue</item>
-///   <item>Unknown                              → null (skipped)</item>
+///   <item><c>Objects.Geometry.Mesh</c>             -> <see cref="Mesh"/></item>
+///   <item><c>Objects.Geometry.Brep</c>             -> native .3dm if present, else display-mesh fallback</item>
+///   <item><c>Objects.Geometry.Surface</c>          -> native .3dm Surface if present, else display-mesh fallback</item>
+///   <item><c>Objects.Geometry.SubD</c>             -> native .3dm SubD if present, else display-mesh fallback</item>
+///   <item><c>Objects.Geometry.Extrusion</c>        -> native .3dm Extrusion if present, else display-mesh fallback</item>
+///   <item><c>Objects.Geometry.PointCloud</c>       -> <see cref="PointCloud"/></item>
+///   <item><c>Objects.Geometry.Line</c>             -> <see cref="LineCurve"/></item>
+///   <item><c>Objects.Geometry.Polyline</c>         -> <see cref="PolylineCurve"/></item>
+///   <item><c>Objects.Geometry.NurbsCurve</c>       -> <see cref="NurbsCurve"/></item>
+///   <item><c>Objects.Geometry.Curve</c>            -> <see cref="NurbsCurve"/> (treated as nurbs)</item>
+///   <item><c>Objects.Geometry.PolyCurve</c>        -> joined <see cref="PolyCurve"/> from nested segments</item>
+///   <item><c>Objects.Geometry.Arc</c>              -> <see cref="ArcCurve"/></item>
+///   <item><c>Objects.Geometry.Circle</c>           -> <see cref="ArcCurve"/> (full)</item>
+///   <item><c>Objects.Geometry.Ellipse</c>          -> ellipse <see cref="NurbsCurve"/></item>
+///   <item><c>Objects.Geometry.Point</c>            -> <see cref="Point"/></item>
+///   <item>Contains <c>"RhinoObject"</c>            -> decoded native .3dm geometry</item>
+///   <item>Has any <c>displayValue</c>              -> first supported geometry from displayValue</item>
+///   <item>Unknown                                  -> null (skipped, warning logged)</item>
 /// </list>
+///
+/// <para>
+/// <b>v0.1.13 changes.</b> The v0.1.12 converter only dispatched a small
+/// subset of types and only checked <c>obj["encoded"]</c> for the native
+/// .3dm payload of a Brep. The live ORBIT wire format -- inherited from
+/// Speckle and observed in PRISM / 3DConvert / the legacy Speckle Rhino
+/// connector -- carries the native payload under either <c>encoded</c>,
+/// <c>encodedValue</c>, or <c>rawEncoding.contents</c> depending on which
+/// sender produced the object. The new converter tries all three. It also
+/// extends type coverage to Surface / SubD / Extrusion / PointCloud /
+/// PolyCurve / Curve / Ellipse, accepts <c>displayValue</c> as either a
+/// JArray or a single JObject (some senders emit one, some the other),
+/// falls back to a display-mesh union for unsupported native types, and
+/// emits a per-object diagnostic line so the next receive bug report is
+/// actionable.
+/// </para>
 /// </summary>
 public class OrbitToRhinoConverter
 {
     private readonly OrbitDeserializer _deserializer = new();
+
+    /// <summary>If true, every dispatch decision is logged via <c>RhinoApp.WriteLine</c>.</summary>
+    public bool Verbose { get; set; } = false;
 
     /// <summary>
     /// Convert a raw ORBIT JSON object to Rhino geometry.
@@ -37,33 +62,73 @@ public class OrbitToRhinoConverter
     public GeometryBase? Convert(JObject obj)
     {
         var speckleType = obj["speckle_type"]?.Value<string>() ?? "";
+        var orbitId = obj["id"]?.Value<string>() ?? obj["applicationId"]?.Value<string>() ?? "?";
 
         try
         {
+            // Native Rhino round-trip dispatch: any speckle_type containing
+            // "RhinoObject" carries a base64 .3dm payload that we want to
+            // decode in preference to anything else (perfect round-trip).
             if (speckleType.Contains("RhinoObject"))
-                return ConvertRhinoNativeObject(obj);
+                return LogResult(speckleType, orbitId, ConvertRhinoNativeObject(obj));
 
-            return speckleType switch
+            // The Speckle Brep / Surface / SubD / Extrusion senders emit a
+            // base64 native payload alongside a display-mesh array. Prefer
+            // the native payload when present.
+            if (HasNativePayload(obj))
             {
-                "Objects.Geometry.Mesh"      => ConvertMesh(obj),
-                "Objects.Geometry.Brep"      => ConvertBrepFallback(obj),
-                "Objects.Geometry.Line"      => ConvertLine(obj),
-                "Objects.Geometry.Polyline"  => ConvertPolyline(obj),
-                "Objects.Geometry.NurbsCurve"=> ConvertNurbsCurve(obj),
-                "Objects.Geometry.Arc"       => ConvertArc(obj),
-                "Objects.Geometry.Circle"    => ConvertCircle(obj),
-                "Objects.Geometry.Point"     => ConvertPoint(obj),
-                _                            => ConvertFromDisplayValue(obj)
+                var native = TryDecodeNativeAny(obj);
+                if (native != null) return LogResult(speckleType, orbitId, native);
+            }
+
+            GeometryBase? result = speckleType switch
+            {
+                "Objects.Geometry.Mesh"       => ConvertMesh(obj),
+                "Objects.Geometry.Brep"       => ConvertBrepFallback(obj),
+                "Objects.Geometry.Surface"    => ConvertBrepFallback(obj),
+                "Objects.Geometry.SubD"       => ConvertBrepFallback(obj),
+                "Objects.Geometry.Extrusion"  => ConvertBrepFallback(obj),
+                "Objects.Geometry.PointCloud" => ConvertPointCloud(obj),
+                "Objects.Geometry.Line"       => ConvertLine(obj),
+                "Objects.Geometry.Polyline"   => ConvertPolyline(obj),
+                "Objects.Geometry.NurbsCurve" => ConvertNurbsCurve(obj),
+                "Objects.Geometry.Curve"      => ConvertNurbsCurve(obj),
+                "Objects.Geometry.PolyCurve"  => ConvertPolyCurve(obj),
+                "Objects.Geometry.Arc"        => ConvertArc(obj),
+                "Objects.Geometry.Circle"     => ConvertCircle(obj),
+                "Objects.Geometry.Ellipse"    => ConvertEllipse(obj),
+                "Objects.Geometry.Point"      => ConvertPoint(obj),
+                _                             => null
             };
+
+            // Universal displayValue fallback. Triggers when the primary
+            // dispatch returned null (unsupported / parse failure) or when
+            // the type wasn't recognised at all. Many Speckle BuiltElements
+            // (Beam, Wall, Floor, ...) only carry meaningful geometry on
+            // displayValue; without this the connector silently drops them.
+            if (result == null)
+                result = ConvertFromDisplayValue(obj);
+
+            return LogResult(speckleType, orbitId, result);
         }
         catch (Exception ex)
         {
-            RhinoApp.WriteLine($"[ORBIT] Convert failed for {speckleType}: {ex.Message}");
+            RhinoApp.WriteLine($"[ORBIT] Convert failed for type='{speckleType}' id={orbitId}: {ex.Message}");
             return null;
         }
     }
 
-    // ── Mesh ─────────────────────────────────────────────────────────────────
+    private GeometryBase? LogResult(string speckleType, string orbitId, GeometryBase? result)
+    {
+        if (Verbose)
+        {
+            var kind = result?.GetType().Name ?? "null";
+            RhinoApp.WriteLine($"[ORBIT] convert: type='{speckleType}' id={orbitId} -> {kind}");
+        }
+        return result;
+    }
+
+    // -- Mesh ----------------------------------------------------------------
 
     private Mesh? ConvertMesh(JObject obj)
     {
@@ -84,6 +149,11 @@ public class OrbitToRhinoConverter
             while (fi < faces.Count)
             {
                 int n = faces[fi++];
+                // Speckle face encoding sometimes packs the leading n as
+                // (3 + actualCount) for n-gons (n==0 means triangle in some
+                // legacy Speckle versions). We treat n as the literal vertex
+                // count and accept 3 / 4 explicitly; any other value we step
+                // over to keep the cursor advancing.
                 if (n == 3 && fi + 2 < faces.Count)
                 {
                     mesh.Faces.AddFace(faces[fi], faces[fi + 1], faces[fi + 2]);
@@ -94,9 +164,17 @@ public class OrbitToRhinoConverter
                     mesh.Faces.AddFace(faces[fi], faces[fi + 1], faces[fi + 2], faces[fi + 3]);
                     fi += 4;
                 }
+                else if (n > 4 && fi + n - 1 < faces.Count)
+                {
+                    // n-gon: fan-triangulate so Rhino still gets a usable mesh.
+                    int v0 = faces[fi];
+                    for (int t = 1; t < n - 1; t++)
+                        mesh.Faces.AddFace(v0, faces[fi + t], faces[fi + t + 1]);
+                    fi += n;
+                }
                 else
                 {
-                    fi += n;
+                    fi += Math.Max(0, n);
                 }
             }
         }
@@ -133,51 +211,78 @@ public class OrbitToRhinoConverter
         return mesh.IsValid ? mesh : null;
     }
 
-    // ── Brep → display mesh fallback ─────────────────────────────────────────
+    // -- Brep / Surface / SubD / Extrusion: native or display-mesh fallback --
 
     private GeometryBase? ConvertBrepFallback(JObject obj)
     {
-        // v1: try to decode the base64-encoded native Brep, fall back to display meshes.
-        var encoded = obj["encoded"]?.Value<string>();
-        if (!string.IsNullOrEmpty(encoded))
-        {
-            var native = DecodeNative(encoded);
-            if (native != null) return native;
-        }
+        var native = TryDecodeNativeAny(obj);
+        if (native != null) return native;
 
-        var displayValue = obj["displayValue"] as JArray;
-        if (displayValue == null || displayValue.Count == 0) return null;
-
-        // Merge all display meshes into one
-        var joined = new Mesh();
-        foreach (var item in displayValue)
-        {
-            if (item is JObject meshObj)
-            {
-                var m = ConvertMesh(meshObj);
-                if (m != null) joined.Append(m);
-            }
-        }
-        joined.Compact();
-        return joined.IsValid ? joined : null;
+        // Display-mesh fallback: Speckle senders typically attach one or more
+        // meshes under `displayValue` for non-Speckle hosts. Merge them all
+        // so layer state and material attribute application sees a single
+        // geometry. This was the v0.1.12 behaviour for Brep specifically;
+        // v0.1.13 routes Surface / SubD / Extrusion through the same code
+        // so they bake instead of being silently dropped.
+        return MergeDisplayValueMeshes(obj);
     }
 
-    // ── Native Rhino round-trip (RhinoDataObject) ─────────────────────────────
+    // -- Native Rhino round-trip (RhinoDataObject) ---------------------------
 
     private GeometryBase? ConvertRhinoNativeObject(JObject obj)
     {
-        // Try rawEncoding (the native .3dm payload) first — perfect round-trip.
-        // rawEncoding may be inline or a reference stub resolved by the pipeline.
-        var rawEncoding = obj["rawEncoding"] as JObject;
-        if (rawEncoding != null)
+        var native = TryDecodeNativeAny(obj);
+        if (native != null) return native;
+        return ConvertFromDisplayValue(obj);
+    }
+
+    /// <summary>
+    /// Returns true if the object carries a base64-encoded native .3dm
+    /// payload anywhere we know to look (encoded / encodedValue /
+    /// rawEncoding / @rawEncoding).
+    /// Used by <see cref="Convert"/> to short-circuit the type dispatch when
+    /// a perfect round-trip is available regardless of declared type.
+    /// </summary>
+    private static bool HasNativePayload(JObject obj)
+    {
+        if (obj["encoded"]?.Type == JTokenType.String) return true;
+        if (obj["encodedValue"]?.Type == JTokenType.String) return true;
+        // v0.1.14: probe both `rawEncoding` (connector shape) and
+        // `@rawEncoding` (PRISM / monorepo-SDK shape, Speckle's
+        // [DetachProperty] convention preserves the `@` prefix on the
+        // wire and the ORBIT server stores it as-is).
+        var raw = obj["rawEncoding"] ?? obj["@rawEncoding"];
+        if (raw is JObject re && re["contents"]?.Type == JTokenType.String) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Try every known location for a base64 .3dm payload. Returns the
+    /// first successfully-decoded geometry, or null.
+    /// </summary>
+    private static GeometryBase? TryDecodeNativeAny(JObject obj)
+    {
+        var encoded = obj["encoded"]?.Value<string>();
+        var native = DecodeNative(encoded);
+        if (native != null) return native;
+
+        var encodedValue = obj["encodedValue"]?.Value<string>();
+        native = DecodeNative(encodedValue);
+        if (native != null) return native;
+
+        // v0.1.14: accept either `rawEncoding` or `@rawEncoding`. PRISM's
+        // upstream resolver in RhinoReceivePipeline already normalises
+        // `@rawEncoding` -> `rawEncoding` before this converter runs, but
+        // nested converters (PolyCurve.segments etc.) can re-enter Convert
+        // with un-normalised payloads, so we defensively accept both here.
+        if ((obj["rawEncoding"] ?? obj["@rawEncoding"]) is JObject rawEncoding)
         {
             var contents = rawEncoding["contents"]?.Value<string>();
-            var native = DecodeNative(contents);
+            native = DecodeNative(contents);
             if (native != null) return native;
         }
 
-        // Fall back to display meshes for non-Rhino originators or decode failures.
-        return ConvertFromDisplayValue(obj);
+        return null;
     }
 
     private static GeometryBase? DecodeNative(string? base64Contents)
@@ -198,7 +303,30 @@ public class OrbitToRhinoConverter
         }
     }
 
-    // ── Curves ───────────────────────────────────────────────────────────────
+    private GeometryBase? MergeDisplayValueMeshes(JObject obj)
+    {
+        var items = EnumerateDisplayValueItems(obj).ToList();
+        if (items.Count == 0) return null;
+
+        // Single item: use it directly so downstream sees the exact geometry
+        // rather than a 1-element merge wrapper.
+        if (items.Count == 1)
+        {
+            var single = ConvertMesh(items[0]);
+            return single?.IsValid == true ? single : null;
+        }
+
+        var joined = new Mesh();
+        foreach (var item in items)
+        {
+            var m = ConvertMesh(item);
+            if (m != null) joined.Append(m);
+        }
+        joined.Compact();
+        return joined.IsValid ? joined : null;
+    }
+
+    // -- Curves --------------------------------------------------------------
 
     private GeometryBase? ConvertLine(JObject obj)
     {
@@ -220,7 +348,7 @@ public class OrbitToRhinoConverter
 
     private GeometryBase? ConvertNurbsCurve(JObject obj)
     {
-        var degree = obj["degree"]?.Value<int>() ?? 3;
+        var degree  = obj["degree"]?.Value<int>() ?? 3;
         var ctrlPts = ReadPoint3dArray(obj["points"]);
         var weights = ReadDoubleArray(obj["weights"]);
         var knots   = ReadDoubleArray(obj["knots"]);
@@ -238,11 +366,38 @@ public class OrbitToRhinoConverter
 
         if (knots != null)
         {
+            // Speckle knot vectors are typically (controlPoints + degree - 1)
+            // long; Rhino's NurbsCurve.Knots is (controlPoints + degree - 1)
+            // long too, so the array maps 1:1 with no padding. If a sender
+            // ever ships a clamped Rhino-style vector with two extra knots,
+            // we just take the first N entries Rhino accepts.
             for (int i = 0; i < knots.Count && i < nc.Knots.Count; i++)
                 nc.Knots[i] = knots[i];
         }
 
         return nc.IsValid ? nc : null;
+    }
+
+    private GeometryBase? ConvertPolyCurve(JObject obj)
+    {
+        // PolyCurve is a sequence of subordinate curves under "segments".
+        // Each segment is itself a Curve / Line / Arc / etc; we recurse via
+        // Convert to reuse the full dispatch logic, then join.
+        if (obj["segments"] is not JArray segments || segments.Count == 0)
+            return null;
+
+        var pc = new PolyCurve();
+        foreach (var seg in segments)
+        {
+            if (seg is not JObject segObj) continue;
+            var geom = Convert(segObj);
+            if (geom is Curve curve)
+            {
+                pc.Append(curve);
+            }
+        }
+        if (pc.SegmentCount == 0) return null;
+        return pc;
     }
 
     private GeometryBase? ConvertArc(JObject obj)
@@ -256,9 +411,11 @@ public class OrbitToRhinoConverter
         var startAngle = obj["startAngle"]?.Value<double>() ?? 0.0;
         var endAngle   = obj["endAngle"]?.Value<double>() ?? Math.PI;
 
-        var arc = new Arc(rhinoPlane.Value, radius, endAngle - startAngle);
-        arc.StartAngle = startAngle;
-        arc.EndAngle   = endAngle;
+        var arc = new Arc(rhinoPlane.Value, radius, endAngle - startAngle)
+        {
+            StartAngle = startAngle,
+            EndAngle   = endAngle,
+        };
         return new ArcCurve(arc);
     }
 
@@ -274,7 +431,20 @@ public class OrbitToRhinoConverter
         return new ArcCurve(circle);
     }
 
-    // ── Point ─────────────────────────────────────────────────────────────────
+    private GeometryBase? ConvertEllipse(JObject obj)
+    {
+        var planeObj = obj["plane"] as JObject;
+        if (planeObj == null) return null;
+        var rhinoPlane = ReadPlane(planeObj);
+        if (rhinoPlane == null) return null;
+
+        var radius1 = obj["firstRadius"]?.Value<double>()  ?? obj["radius1"]?.Value<double>() ?? 1.0;
+        var radius2 = obj["secondRadius"]?.Value<double>() ?? obj["radius2"]?.Value<double>() ?? 1.0;
+        var ellipse = new Ellipse(rhinoPlane.Value, radius1, radius2);
+        return ellipse.ToNurbsCurve();
+    }
+
+    // -- Point / PointCloud --------------------------------------------------
 
     private GeometryBase? ConvertPoint(JObject obj)
     {
@@ -284,37 +454,89 @@ public class OrbitToRhinoConverter
         return new Point(new Point3d(x, y, z));
     }
 
-    // ── Generic displayValue fallback ──────────────────────────────────────────
+    private GeometryBase? ConvertPointCloud(JObject obj)
+    {
+        // Speckle PointCloud: points = flat [x,y,z, x,y,z, ...]; optional
+        // colors = [argb, argb, ...] (one per point).
+        var pts = ReadPoint3dArray(obj["points"]);
+        if (pts == null || pts.Count == 0) return null;
+
+        var pc = new PointCloud();
+        var colors = ReadIntArray(obj["colors"]);
+        for (int i = 0; i < pts.Count; i++)
+        {
+            if (colors != null && i < colors.Count)
+                pc.Add(pts[i], System.Drawing.Color.FromArgb(colors[i]));
+            else
+                pc.Add(pts[i]);
+        }
+        return pc.Count > 0 ? pc : null;
+    }
+
+    // -- Generic displayValue fallback ---------------------------------------
 
     private GeometryBase? ConvertFromDisplayValue(JObject obj)
     {
-        var displayValue = obj["displayValue"] as JArray;
-        if (displayValue == null || displayValue.Count == 0) return null;
+        foreach (var item in EnumerateDisplayValueItems(obj))
+        {
+            var type = item["speckle_type"]?.Value<string>() ?? "";
+            // Recurse so nested displayValue meshes / breps / curves all
+            // route through the full type dispatch (gives e.g. PolyCurve
+            // displayValue arrays, surface displayValue meshes, etc.).
+            if (type.StartsWith("Objects.Geometry."))
+            {
+                var nested = Convert(item);
+                if (nested != null) return nested;
+            }
+        }
 
-        var first = displayValue[0] as JObject;
-        if (first == null) return null;
-
-        var type = first["speckle_type"]?.Value<string>() ?? "";
-        if (type == "Objects.Geometry.Mesh") return ConvertMesh(first);
-
-        return null;
+        // Last resort: treat displayValue as a list of meshes and merge.
+        return MergeDisplayValueMeshes(obj);
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Yield every JObject under <c>displayValue</c>, regardless of whether
+    /// the sender emitted it as an array (Speckle Rhino connector, PRISM,
+    /// 3DConvert) or a single object (some Speckle Python / JS variants).
+    ///
+    /// <para>
+    /// v0.1.14: also probes <c>@displayValue</c>. PRISM / the monorepo SDK
+    /// marks <c>displayValue</c> as <c>[DetachProperty]</c> on
+    /// <c>RhinoDataObject</c>, and Speckle's serialiser preserves the <c>@</c>
+    /// prefix on the wire — the ORBIT server stores it as-is. The receive
+    /// pipeline normalises this back to <c>displayValue</c> before invoking
+    /// the converter, but nested converters (PolyCurve segments, Brep
+    /// fallback recursion) re-enter <see cref="Convert"/> with un-normalised
+    /// payloads, so we accept both names defensively here.
+    /// </para>
+    /// </summary>
+    private static IEnumerable<JObject> EnumerateDisplayValueItems(JObject obj)
+    {
+        var dv = obj["displayValue"] ?? obj["@displayValue"];
+        if (dv == null) yield break;
+        switch (dv)
+        {
+            case JArray arr:
+                foreach (var item in arr)
+                    if (item is JObject jo) yield return jo;
+                break;
+            case JObject one:
+                yield return one;
+                break;
+        }
+    }
+
+    // -- Helpers -------------------------------------------------------------
 
     private static List<double>? ReadDoubleArray(JToken? token)
     {
-        if (token == null) return null;
-        var arr = token as JArray;
-        if (arr == null) return null;
+        if (token is not JArray arr) return null;
         return arr.Select(v => v.Value<double>()).ToList();
     }
 
     private static List<int>? ReadIntArray(JToken? token)
     {
-        if (token == null) return null;
-        var arr = token as JArray;
-        if (arr == null) return null;
+        if (token is not JArray arr) return null;
         return arr.Select(v => v.Value<int>()).ToList();
     }
 
@@ -340,9 +562,9 @@ public class OrbitToRhinoConverter
     private static Plane? ReadPlane(JObject obj)
     {
         var originToken = obj["origin"] as JObject;
+        if (originToken == null) return null;
         var xdirToken   = obj["xdir"]   as JObject;
         var ydirToken   = obj["ydir"]   as JObject;
-        if (originToken == null) return null;
 
         var origin = ReadPoint(originToken) ?? Point3d.Origin;
         var xAxis = xdirToken != null
