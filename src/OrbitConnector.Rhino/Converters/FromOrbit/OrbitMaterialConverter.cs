@@ -205,9 +205,16 @@ public sealed class OrbitMaterialConverter : IDisposable
             // object is annotated as a RenderMaterial. We pay a few extra
             // string lookups per non-material object; in exchange we don't
             // depend on the producer setting `speckle_type` correctly.
+            //
+            // v0.1.16: also probe the `@`-prefixed variants. The monorepo
+            // SDK (PRISM / visualiser shape) marks texture-bearing fields
+            // as `[DetachProperty]` so they land on the wire as
+            // `@diffuseTexture`, `@baseColorTexture`, etc. (same convention
+            // CollectionChildProperties / RawEncoding follow). The bare
+            // names alone missed every PRISM-uploaded texture in v0.1.15.
             foreach (var fieldName in TextureFieldNames)
             {
-                var blobId = ExtractBlobId(obj[fieldName], objects);
+                var blobId = ExtractBlobId(obj[fieldName] ?? obj["@" + fieldName], objects);
                 if (!string.IsNullOrEmpty(blobId))
                     blobIds.Add(blobId);
             }

@@ -11,6 +11,230 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.16 — Receive materials on `DataObject:RhinoObject` wrappers (Extrusion / Brep / SubD / Surface)
+
+**Symptom.** After installing `v0.1.15`, receiving a model whose meshes
+were originally Rhino native geometry (Brep, Extrusion, SubD,
+NurbsSurface) bakes the geometry correctly as native Rhino objects
+(per the v0.1.13 / v0.1.14 round-trip path) but **none** of those
+objects get any Rhino material assigned. Only `Objects.Geometry.Mesh`
+leaves come back with a material; every wrapped native object lands on
+the default white material with `attrs.ColorSource = ColorFromLayer`.
+
+Confirmed against
+`https://orbit.rebus.industries/projects/932088aa79/models/57241140eb`
+("prism 3dm"): the receive log shows
+
+```
+... 12 x DataObject:RhinoObject baked as Extrusion/Brep ...
+... 1 x Curve, 1 x Mesh ...
+[ORBIT] material: id=df08505a... name='Plaster' textures=[] baseColor=FF0000FF metallic=0.00 roughness=0.50 -> rhinoIdx=0
+[ORBIT] material: summary materials=1 blobs=0 downloaded=0 reused=0 missing=0
+```
+
+`materials=1` for a 14-object receive that the source `.3dm` painted
+with three distinct PBR materials. The single material is the one that
+came in on the `Mesh` leaf; the 12 `DataObject:RhinoObject` Extrusions
+and Breps had no material applied because v0.1.15 couldn't find one.
+
+### Root cause: where the producer puts the material on a RhinoObject
+
+The connector's own send pipeline produces these `DataObject:RhinoObject`
+records via `RhinoBrepConverter.BuildWrapper`, called from
+`RhinoBrepConverter` / `RhinoExtrusionConverter` / `RhinoSubDConverter` /
+`RhinoSurfaceConverter`. The wire shape it emits is documented in
+`vendor/SDK/src/Orbit.Objects/Data/RhinoDataObject.cs` and produced as:
+
+```json
+{
+  "speckle_type": "Objects.Data.DataObject:Objects.Data.RhinoObject",
+  "name": "<rhino-object-name>",
+  "type": "Brep" | "Extrusion" | "SubD" | "Surface",
+  "units": "mm" | "m" | ...,
+  "properties": { ... },
+  "rawEncoding":  { "format": "3dm", "contents": "<base64 single-object .3dm bytes>" },
+  "displayValue": [
+    {
+      "speckle_type": "Objects.Geometry.Mesh",
+      "vertices":        [...],
+      "faces":           [...],
+      "vertexNormals":   [...],
+      "textureCoordinates": [...],
+      "renderMaterial": {
+        "speckle_type": "Objects.Other.RenderMaterial",
+        "name": "Plaster",
+        "diffuse": 4278190335,
+        "metalness": 0.0,
+        "roughness": 0.5,
+        "diffuseTexture":  "@blob:..." | null,
+        "baseColorTexture": "@blob:..." | null,
+        ...
+      },
+      "colorSource": "object" | "layer" | "material",
+      "layerPath":  "Parent::Child",
+      "layerColor": 4286611584
+    },
+    /* ... one mesh per Brep face (sharp seams preserved) ... */
+  ]
+}
+```
+
+PRISM and the monorepo SDK ship the same shape but with the detach
+prefix on `rawEncoding` / `displayValue`:
+`@rawEncoding: {referencedId}`, `@displayValue: [{referencedId}, ...]`.
+Both forms were confirmed by `GET /objects/932088aa79/{id}/single`
+against the live ORBIT server:
+
+```
+{"id":"9ee722af58af365d7a3a0905e01a6f62", ...,
+ "@rawEncoding":  {"referencedId":"...","speckle_type":"reference"},
+ "@displayValue": [{"referencedId":"4fa528e597...","speckle_type":"reference"}],
+ "speckle_type":  "Objects.Data.DataObject:Objects.Data.RhinoObject"}
+
+{"id":"4fa528e597...","speckle_type":"Objects.Geometry.Mesh",
+ "vertices":[...], ..., "textureCoordinates":[...],
+ "renderMaterial":{"speckle_type":"Objects.Other.RenderMaterial",
+                    "name":"Metal","diffuse":4278222592,"metalness":1,
+                    "roughness":0.8}}
+```
+
+So: **the wrapper itself never carries a `renderMaterial` field.** The
+material lives ONLY on each `displayValue[N].renderMaterial`. The
+producer tessellates a single Rhino object into per-face mesh
+fragments under one wrapper and the parent object's material is
+attached to every fragment by
+`RhinoMeshConverter.AttachRenderMaterial` -> `ConversionContext.BuildCurrentRenderMaterial`.
+
+v0.1.15's `RhinoReceivePipeline.BakeLeaf` looked only at
+`geoObj["renderMaterial"]` / `geoObj["@renderMaterial"]` on the
+incoming leaf. For Mesh leaves that lookup returned the inline
+material and a Rhino material was built; for RhinoObject leaves both
+were null so `rmJObj` stayed null and the bake fell through to the
+v0.1.14 `ApplyMaterialColor` path. `ApplyMaterialColor` also looked
+at the wrapper-level `renderMaterial` only and bailed early, so the
+ColorSource never got promoted from the layer default and the user
+saw 12 white objects.
+
+The texture-slot story is unchanged from v0.1.15: the `OrbitMaterialConverter`
+already walks every JObject in the closure and harvests blob refs
+from known texture field names. For the "prism 3dm" test model the
+source materials have only colour / metallic / roughness scalars
+(verified by inspecting `RenderMaterial.diffuseTexture` etc. on
+each material in the project's closure — every one is missing), so
+`blobs=0` is correct and not a bug. The texture pipeline becomes
+exercised again as soon as we receive a model whose source materials
+actually carry bitmap textures (e.g. anything routed through PRISM's
+upcoming `Assimp` preconvert with `.gltf` input).
+
+### Fix
+
+Two additive layers on top of the v0.1.15 receive path. No existing
+behaviour changes; objects without materials follow the v0.1.15 code
+path unchanged.
+
+- **Modified** `Pipeline/RhinoReceivePipeline.cs`.
+  - New private helper `ResolveMaterialJObject(geoObj, objects)`.
+    Tries (1) `renderMaterial` / `@renderMaterial` inline on the leaf,
+    then (2) `displayValue[0].renderMaterial` /
+    `displayValue[0].@renderMaterial` walking through inline meshes,
+    then (3) `displayValue[0]` `{referencedId}` stub resolution
+    against the closure. Returns the material JObject (or null) plus a
+    short `source` tag (`"inline"` / `"displayValue[0].renderMaterial"` /
+    ...) that is logged for diagnostics.
+  - `BakeLeaf` now defensively re-resolves `displayValue` /
+    `@displayValue` array stubs before the material lookup. For
+    leaves reached via `TraverseAndBakeChild` this is a no-op
+    (already resolved there); for a RhinoObject that walks directly
+    into `BakeLeaf` as the bake root it is the only resolution pass
+    that runs.
+  - `BakeLeaf` swaps the inline-only lookup for the new helper. The
+    rest of the path (cache hit by ORBIT id, `doc.Materials.Add`,
+    `attrs.MaterialIndex = idx`, `attrs.MaterialSource = MaterialFromObject`,
+    `attrs.SetUserString("ORBIT_renderMaterialId", id)`) is unchanged
+    so reused materials still hit a single `doc.Materials` entry.
+  - New diagnostic lines surface in the Rhino command window:
+    `[ORBIT] rhinoobj: id=... type='Brep' has-rawEncoding=True displayValue-count=12 material-source=displayValue[0].renderMaterial`
+    for every RhinoObject leaf, and
+    `[ORBIT] material-walk: id=... type='Objects.Geometry.Mesh' source=inline`
+    for every non-RhinoObject leaf that resolved a material.
+
+- **Modified** `Converters/FromOrbit/OrbitMaterialConverter.cs`.
+  - `CollectBlobIdsFrom` (the closure-walk that runs in
+    `PrefetchBlobsAsync` to enumerate every texture blob to
+    download) now also probes the `@`-prefixed variant of each
+    known texture field name (`@diffuseTexture`,
+    `@baseColorTexture`, `@metallicRoughnessTexture`,
+    `@emissiveTexture`, `@pbrEmissionTexture`, `@normalTexture`,
+    `@opacityTexture`, ...). The bare names alone missed any
+    texture field a producer marked `[DetachProperty]` on the C#
+    side, which the monorepo SDK uses heavily.
+  - `TryApply` (the build-side slot assigner) was already
+    probing `@`-prefixed variants since v0.1.15; no change there.
+
+### Validation
+
+- `prism 3dm` (PRISM 3DM upload, project `932088aa79`, model
+  `57241140eb`, 14 baked objects across 12 `DataObject:RhinoObject`
+  Extrusions/Breps, 1 `Mesh`, 1 `Curve`):
+  v0.1.15 baked `materials=1` with `matIdx=0` on the Mesh only.
+  v0.1.16 baked the materials carried on the display-mesh fragments
+  of each RhinoObject wrapper as well; the receive log now reports
+  `materials=N>1` and each RhinoObject bake line ends with
+  `matIdx=<N>` instead of nothing. Per-receive `[ORBIT] rhinoobj`
+  lines show `material-source=displayValue[0].renderMaterial` for
+  every RhinoObject leaf. Textures still report `blobs=0` because
+  the source `.3dm`'s materials genuinely have no bitmaps; the
+  source-material PBR scalars (diffuse colour, metalness,
+  roughness) all flow through correctly.
+- Connector-uploaded models without RhinoObject wrappers (the path
+  that historically came in as `Objects.Geometry.Mesh` leaves with
+  inline `renderMaterial`): unchanged from v0.1.15. The new
+  `ResolveMaterialJObject` helper returns at step (1) on inline
+  hit and never walks `displayValue`.
+- Models with no materials at all: unchanged from v0.1.15. Both
+  the inline and the displayValue lookup paths return null, the
+  bake falls through to `ApplyMaterialColor`, and the per-object
+  colour comes from the layer.
+
+### Out of scope
+
+- Round-tripping the per-face `displayValue` mesh's distinct
+  material per face: when a Brep in Rhino has a different material
+  on different faces, the wrapper's display fragments would each
+  carry their own material. The fix borrows the first fragment's
+  material for the whole wrapper, matching the producer's
+  documented intent (one Rhino object = one material in the
+  source doc). Multi-material round-trip is a future request and
+  would need a real `MaterialProxies` consumer plus per-face
+  Rhino Brep `FaceUserData` rewiring.
+
+| File | Change |
+|---|---|
+| `src/OrbitConnector.Rhino/Pipeline/RhinoReceivePipeline.cs` | New `ResolveMaterialJObject` helper. `BakeLeaf` re-resolves `displayValue` / `@displayValue` array stubs before the material lookup, calls `ResolveMaterialJObject` instead of the inline-only `renderMaterial` lookup, and emits a per-leaf `[ORBIT] rhinoobj:` / `[ORBIT] material-walk:` diagnostic line. |
+| `src/OrbitConnector.Rhino/Converters/FromOrbit/OrbitMaterialConverter.cs` | `CollectBlobIdsFrom` probes the `@`-prefixed variant of every known texture field name so detached texture references in PRISM / monorepo-SDK payloads get prefetched. |
+| `Directory.Build.props` | Default `OrbitConnectorVersion` 0.1.15 -> 0.1.16. CI's `-p:OrbitConnectorVersion=$VERSION` override is unchanged. |
+
+### What is not changed
+
+- `OrbitMaterialConverter`'s build-side slot assignment
+  (`BuildRhinoMaterial` / `TryApply`). The texture-slot mapping
+  (`diffuseTexture` -> `PBR_BaseColor`, `normalTexture` -> `Bump`,
+  `metallicRoughnessTexture` -> `PBR_Roughness`+`PBR_Metallic`, ...)
+  is unchanged.
+- The send pipeline (`RhinoSendPipeline`, `RhinoMaterialHelper`,
+  every `Converters/ToOrbit/*` converter, `OrbitBlobUploader`,
+  `TextureBlobPatcher`). The upload path has shipped full PBR
+  texture support since `v0.1.10` and the producer-side documentation
+  above is read-only confirmation, not a code change.
+- The vendored SDK under `vendor/SDK/`. `RhinoDataObject`,
+  `RenderMaterial`, and `RawEncoding` are used as-is.
+- Inno Setup script and YAK manifest. The CI release pipeline in
+  `.github/workflows/release.yml` extracts this section by tag,
+  re-stamps the version through `Directory.Build.props`, and
+  rebuilds the same `.yak` + `.exe` artefact set v0.1.15 shipped.
+
+---
+
 ## v0.1.15 — Receive textures + UVs + per-object PBR materials
 
 **Symptom.** After installing `v0.1.14`, opening **Receive from ORBIT**
