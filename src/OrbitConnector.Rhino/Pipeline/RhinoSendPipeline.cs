@@ -2,7 +2,10 @@ using Rhino;
 using Rhino.Geometry;
 using Rhino.DocObjects;
 using Orbit.Objects.Base;
+using Orbit.Objects.BuiltElements;
 using Orbit.Sdk.Serialisation;
+using OrbitPoint  = Orbit.Objects.Geometry.Point;
+using OrbitVector = Orbit.Objects.Geometry.Vector;
 using Orbit.Sdk.Transport;
 using Orbit.Sdk.Api;
 using OrbitConnector.Rhino.Converters;
@@ -47,13 +50,17 @@ public class RhinoSendPipeline
 
         // 1. EXTRACT objects from document
         var rhinoObjects = ExtractObjects(card, doc);
+        progress?.Report(($"Found {rhinoObjects.Count} objects…", 5));
         if (rhinoObjects.Count == 0)
-            throw new InvalidOperationException("No objects to send.");
+            throw new InvalidOperationException(
+                $"No objects to send. Layer mode: {card.LayerMode}, doc objects: {doc.Objects.Count}");
 
         progress?.Report(("Converting geometry…", 10));
 
         // 2. CONVERT — build layer tree
         var root = BuildObjectTree(rhinoObjects, doc, context, card);
+        var totalConverted = root.Elements?.Sum(e => (e as OrbitObject)?.Elements?.Count ?? 0) ?? 0;
+        progress?.Report(($"Converted {totalConverted} objects, serialising…", 35));
 
         // 3. SERIALISE
         progress?.Report(("Serialising…", 40));
@@ -81,8 +88,10 @@ public class RhinoSendPipeline
         progress?.Report(("Creating version…", 92));
         var version = await client.CreateVersionAsync(
             card.ProjectId!, card.ModelId!, root.Id!,
-            message: $"Sent from ORBIT Rhino Connector",
-            sourceApplication: "OrbitRhino", ct);
+            message: "Sent from ORBIT Rhino Connector",
+            sourceApplication: "OrbitRhino",
+            totalChildrenCount: objectBatch.Count,
+            ct);
 
         progress?.Report(("Done", 100));
         return version.Id!;
@@ -90,18 +99,39 @@ public class RhinoSendPipeline
 
     private List<RhinoObject> ExtractObjects(ConnectorCard card, RhinoDoc doc)
     {
+        // Use ObjectEnumeratorSettings — the correct Rhino API for filtering doc objects
+        var settings = new ObjectEnumeratorSettings()
+        {
+            NormalObjects     = true,
+            LockedObjects     = false,
+            HiddenObjects     = false,
+            DeletedObjects    = false,
+            IncludeLights     = false,
+            IncludeGrips      = false,
+        };
+
+        var allNormal = doc.Objects.GetObjectList(settings)
+                          .Where(o => o.Geometry != null)
+                          .ToList();
+
         return card.LayerMode switch
         {
-            LayerMode.All => doc.Objects
-                .Where(o => o.IsNormal && o.Geometry != null)
+            LayerMode.All => allNormal,
+
+            LayerMode.ByLayer => allNormal
+                .Where(o => card.IncludedLayers.Contains(
+                    doc.Layers[o.Attributes.LayerIndex].FullPath))
                 .ToList(),
-            LayerMode.ByLayer => doc.Objects
-                .Where(o => o.IsNormal && o.Geometry != null &&
-                    card.IncludedLayers.Contains(doc.Layers[o.Attributes.LayerIndex].FullPath))
-                .ToList(),
-            LayerMode.Selection => doc.Objects
-                .Where(o => o.IsSelected(false) == 1 && o.Geometry != null)
-                .ToList(),
+
+            // Selection: use the GUIDs snapshotted when the user set the selection filter
+            LayerMode.Selection => card.SelectedObjectIds.Count > 0
+                ? allNormal
+                    .Where(o => card.SelectedObjectIds.Contains(o.Id.ToString()))
+                    .ToList()
+                : doc.Objects.GetSelectedObjects(false, false)
+                    .Where(o => o.Geometry != null)
+                    .ToList(),
+
             _ => new List<RhinoObject>()
         };
     }
@@ -110,23 +140,30 @@ public class RhinoSendPipeline
         List<RhinoObject> rhinoObjects, RhinoDoc doc,
         ConversionContext context, ConnectorCard card)
     {
+        // Root collection — must be CollectionType="model" to match the working Speckle reference
+        // (the previous "root" value prevented the viewer from rendering the sidebar tree).
         var root = new OrbitObject
         {
-            Name = card.ProjectName ?? "ORBIT Send",
+            Name              = card.ModelName ?? card.ProjectName ?? "ORBIT Send",
+            CollectionType    = "model",
             SourceApplication = "OrbitRhino",
-            Units = context.Units,
-            Elements = new List<OrbitBase>()
+            Units             = context.Units,
+            Elements          = new List<OrbitBase>()
         };
 
-        // Group by layer
+        // Group by layer, build one Collection per layer
         var byLayer = rhinoObjects.GroupBy(o => o.Attributes.LayerIndex);
         foreach (var group in byLayer)
         {
             var layer = doc.Layers[group.Key];
+            var layerColor = ArgbToUnsignedLong(layer.Color.ToArgb());
             var layerCollection = new OrbitObject
             {
-                Name = layer.FullPath,
-                Elements = new List<OrbitBase>()
+                Name           = layer.FullPath,
+                CollectionType = "layer",
+                LayerPath      = layer.FullPath,
+                LayerColor     = layerColor,
+                Elements       = new List<OrbitBase>()
             };
 
             foreach (var obj in group)
@@ -134,20 +171,97 @@ public class RhinoSendPipeline
                 var converted = ConvertWithFallback(obj.Geometry!, context);
                 if (converted == null) continue;
                 converted.ApplicationId = obj.Id.ToString();
+
+                // Tag every leaf with its layer info so the viewer can colour it.
+                // Done via the dynamic-properties indexer so this works for any OrbitBase
+                // (Mesh, Brep, future curve/point types) without N specific setters.
+                converted["layerPath"]   = layer.FullPath;
+                converted["layerColor"]  = layerColor;
+                converted["colorSource"] = "layer";
+
                 layerCollection.Elements.Add(converted);
             }
 
-            root.Elements.Add(layerCollection);
+            if (layerCollection.Elements.Count > 0)
+                root.Elements.Add(layerCollection);
         }
 
-        // Attach proxies at root
-        root["renderMaterialProxies"] = context.MaterialProxies;
-        root["colorProxies"]          = context.ColorProxies;
-        root["groupProxies"]          = context.GroupProxies;
-        root["definitionProxies"]     = context.DefinitionProxies;
+        // Attach proxies at root (kept for future use by bake/receive)
+        if (context.MaterialProxies.Count   > 0) root["renderMaterialProxies"] = context.MaterialProxies;
+        if (context.ColorProxies.Count      > 0) root["colorProxies"]          = context.ColorProxies;
+        if (context.GroupProxies.Count      > 0) root["groupProxies"]          = context.GroupProxies;
+        if (context.DefinitionProxies.Count > 0) root["definitionProxies"]     = context.DefinitionProxies;
+
+        // Named views — stored INLINE under `views` (no @ prefix). The full View3D objects
+        // sit directly in the root JSON, matching the working Speckle reference.
+        var views = ExtractNamedViews(doc, context.Units);
+        if (views.Count > 0)
+            root.Views = views;
 
         return root;
     }
+
+    /// <summary>
+    /// Extracts all named views from the Rhino document as <see cref="View3D"/> objects.
+    /// Each view carries inline <c>origin</c>/<c>target</c> Points and <c>upDirection</c>/
+    /// <c>forwardDirection</c> Vectors, matching the structure the Speckle/ORBIT viewer
+    /// expects to populate its saved-views panel.
+    /// </summary>
+    private static List<View3D> ExtractNamedViews(RhinoDoc doc, string? units)
+    {
+        var views = new List<View3D>();
+        foreach (var info in doc.NamedViews)
+        {
+            try
+            {
+                var vp = info.Viewport;
+
+                // CameraLocation — world position of the camera.
+                var camLoc = vp.CameraLocation;
+                var origin = new OrbitPoint(camLoc.X, camLoc.Y, camLoc.Z, units);
+
+                // Target = origin + (forward direction). Rhino's CameraZ points FROM target
+                // TOWARD camera, so the look direction is -CameraZ.
+                var camZ = vp.CameraZ;
+                var targetPt = camLoc - camZ;
+                var target = new OrbitPoint(targetPt.X, targetPt.Y, targetPt.Z, units);
+
+                // Up vector (Rhino's CameraY).
+                var camY = vp.CameraY;
+                var up   = new OrbitVector(camY.X, camY.Y, camY.Z, units);
+
+                // Forward vector (from camera to target). This is the field the previous
+                // implementation was missing entirely.
+                var forward = new OrbitVector(-camZ.X, -camZ.Y, -camZ.Z, units);
+
+                double lens = vp.IsParallelProjection ? 0 : vp.Camera35mmLensLength;
+
+                views.Add(new View3D
+                {
+                    Name             = info.Name,
+                    Origin           = origin,
+                    Target           = target,
+                    UpDirection      = up,
+                    ForwardDirection = forward,
+                    IsOrthogonal     = vp.IsParallelProjection,
+                    Lens             = lens,
+                    Units            = units,
+                });
+            }
+            catch
+            {
+                // Skip malformed views rather than aborting the whole send.
+            }
+        }
+        return views;
+    }
+
+    /// <summary>
+    /// Packs a signed 32-bit ARGB integer (as returned by <c>System.Drawing.Color.ToArgb</c>)
+    /// into an unsigned long, matching the Speckle Python SDK convention. This avoids the
+    /// sign-bit mismatch that would otherwise produce wrong colours in the viewer.
+    /// </summary>
+    private static long ArgbToUnsignedLong(int argb) => (long)(uint)argb;
 
     private OrbitBase? ConvertWithFallback(GeometryBase geometry, ConversionContext context)
     {

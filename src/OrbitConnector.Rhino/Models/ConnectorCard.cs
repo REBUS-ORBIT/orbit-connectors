@@ -1,9 +1,15 @@
 using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
 
 namespace OrbitConnector.Rhino.Models;
 
+[JsonConverter(typeof(StringEnumConverter))]
 public enum CardType { Send, Receive }
+
+[JsonConverter(typeof(StringEnumConverter))]
 public enum LayerMode { All, ByLayer, Selection }
+
+[JsonConverter(typeof(StringEnumConverter))]
 public enum ServerTarget { Prod, Dev }
 
 /// <summary>
@@ -22,8 +28,10 @@ public class ConnectorCard
     [JsonProperty("modelName")]   public string? ModelName   { get; set; }
 
     // Layer filtering (Send only)
-    [JsonProperty("layerMode")]      public LayerMode LayerMode      { get; set; } = LayerMode.All;
-    [JsonProperty("includedLayers")] public List<string> IncludedLayers { get; set; } = new();
+    [JsonProperty("layerMode")]           public LayerMode    LayerMode           { get; set; } = LayerMode.All;
+    [JsonProperty("includedLayers")]      public List<string> IncludedLayers      { get; set; } = new();
+    // Snapshot of selected Rhino object GUIDs — captured when Selection mode is confirmed
+    [JsonProperty("selectedObjectIds")]   public List<string> SelectedObjectIds   { get; set; } = new();
 
     // Send history
     [JsonProperty("lastVersionId")]  public string? LastVersionId  { get; set; }

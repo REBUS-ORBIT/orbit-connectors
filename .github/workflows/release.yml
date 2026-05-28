@@ -1,15 +1,34 @@
 name: release
 
-# Tag-driven release pipeline for the ORBIT Rhino connector.
+# Tag-driven release pipeline for the ORBIT connector suite.
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v0.1.1 && git push origin v0.1.1
 #
-# fires three jobs:
+# fires the following matrix of jobs (one per host x OS), then a single
+# release job that downloads every artefact and publishes a GitHub
+# Release named "ORBIT Connectors v<X.Y.Z>" with the body extracted from
+# CHANGELOG.md:
 #
-#   build-windows : YAK (rh8-win) + Inno Setup .exe   on windows-latest
-#   build-macos   : YAK (rh8-mac arm64+x64)            on macos-latest   (scaffold)
-#   release       : creates the GitHub Release and attaches every artefact
-#                   produced above
+#   build-rhino-windows         (yak + inno)        windows-latest
+#   build-rhino-macos           (yak scaffold + dmg) macos-latest    continue-on-error
+#   build-vectorworks-windows   (inno placeholder)  windows-latest   continue-on-error
+#   build-vectorworks-macos     (dmg placeholder)   macos-latest     continue-on-error
+#   build-ue5-windows           (inno placeholder)  windows-latest   continue-on-error
+#   build-ue5-macos             (dmg placeholder)   macos-latest     continue-on-error
+#   release                     (publish github release with all artefacts)
+#
+# Notes:
+#   - Vectorworks + UE5 plug-in source does not exist yet (v0.1.1
+#     scaffolds the release pipeline shape only). Their build jobs run
+#     `continue-on-error: true` so the release still ships even if a
+#     placeholder build glitches.
+#   - The Rhino mac job is also continue-on-error because the csproj
+#     remains net8.0-windows-only (see installers/rhino/MACOS.md). The
+#     job will at least produce a .dmg wrapper around the
+#     "use yak on Mac" README via hdiutil.
+#   - orbit-sdk is now public; we clone it tokenlessly. The old
+#     ORBIT_DEPLOY_PAT secret is no longer required (left provisioned
+#     on the repo for safety, just unused).
 
 on:
   push:
@@ -27,33 +46,39 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  build-windows:
+  # Shared version resolver: every build job reads from this output instead of
+  # re-parsing the tag, so a workflow_dispatch run with a manual version
+  # produces consistent filenames across all 6 builds.
+  resolve-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      version: ${{ steps.v.outputs.value }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            v="${{ github.event.inputs.version_override }}"
+            [[ -z "$v" ]] && v="0.0.0-dev"
+          else
+            # ref_name is e.g. "v0.1.1" -- strip the leading v
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "Resolved version: $v"
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  build-rhino-windows:
+    needs: resolve-version
     runs-on: windows-latest
     timeout-minutes: 30
-    outputs:
-      version: ${{ steps.version.outputs.value }}
     env:
-      # The csproj references Orbit.Objects / Orbit.Sdk from the private
-      # github-orbit feed registered in nuget.config. NUGET_TOKEN is read by
-      # nuget.config's <packageSourceCredentials> for that feed.
       NUGET_TOKEN: ${{ secrets.NUGET_TOKEN }}
+      VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Resolve version from tag
-        id: version
-        shell: pwsh
-        run: |
-          $ref = "${{ github.ref_name }}"
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $version = "${{ github.event.inputs.version_override }}"
-            if (-not $version) { $version = "0.0.0-dev" }
-          } else {
-            # ref_name is e.g. "v0.1.0" -- strip the leading v
-            $version = $ref -replace '^v',''
-          }
-          Write-Host "Resolved version: $version"
-          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -66,29 +91,20 @@ jobs:
           $dest = "$env:RUNNER_TEMP\yak.exe"
           Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
           Write-Host "Downloaded yak.exe to $dest"
-          # Put it on PATH for the rest of the job.
           "$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Clone Orbit SDK (private sibling repo)
+      - name: Clone ORBIT SDK
+        # orbit-sdk is now public, so a depth-1 tokenless clone works. The
+        # csproj resolves Orbit.Objects / Orbit.Sdk via ProjectReference when
+        # ORBIT_SDK_LOCAL=1 (see Directory.Build.props).
         shell: pwsh
-        # The csproj resolves Orbit.Objects / Orbit.Sdk via PackageReference
-        # against the github-orbit feed by default, but no public NuGet
-        # publish flow exists yet. Sidestep by cloning REBUS-ORBIT/orbit-sdk
-        # alongside the checkout at ../SDK/ and flipping ORBIT_SDK_LOCAL=1 so
-        # Directory.Build.props swaps in ProjectReferences.
-        #
-        # ORBIT_DEPLOY_PAT must be a classic PAT (or fine-grained PAT) with
-        # `repo` read access to REBUS-ORBIT/orbit-sdk. NUGET_TOKEN cannot be
-        # reused here because it's scoped to GHCR package read/write, not git.
         run: |
           $sdkParent = Split-Path -Parent $PWD
           $sdkDir    = Join-Path $sdkParent 'SDK'
           if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
-          $token = "${{ secrets.ORBIT_DEPLOY_PAT }}"
-          if (-not $token) { throw "secrets.ORBIT_DEPLOY_PAT is required to clone the private orbit-sdk repo" }
-          git clone --depth 1 "https://x-access-token:$token@github.com/REBUS-ORBIT/orbit-sdk.git" $sdkDir
+          git clone --depth 1 https://github.com/REBUS-ORBIT/orbit-sdk.git $sdkDir
           # nuget.config also references ../SDK/nupkgs as a local source; create
-          # the folder empty so NuGet doesn't fail with NU1301.
+          # it empty so NuGet doesn't fail with NU1301.
           New-Item -ItemType Directory -Force -Path (Join-Path $sdkDir 'nupkgs') | Out-Null
           Write-Host "Cloned orbit-sdk to $sdkDir"
 
@@ -97,32 +113,20 @@ jobs:
           ORBIT_SDK_LOCAL: '1'
         shell: pwsh
         run: |
-          $v = "${{ steps.version.outputs.value }}"
-          .\installers\rhino\build-yak.ps1 -Version $v -RhinoTargets rh8
+          .\installers\rhino\build-yak.ps1 -Version $env:VERSION -RhinoTargets rh8
 
       - name: Build Inno Setup .exe
         env:
           ORBIT_SDK_LOCAL: '1'
         shell: pwsh
         run: |
-          $v = "${{ steps.version.outputs.value }}"
-
-          # Locate ISCC -- pre-installed on windows-latest, fall back to choco.
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            choco install innosetup -y --no-progress
-          }
-          if (-not (Test-Path $iscc)) {
-            throw "ISCC.exe still missing after choco install"
-          }
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe still missing after choco install" }
 
-          # The build-yak.ps1 step above already produced a release build.
-          # Reuse its bin folder as the payload for Inno.
           $payload = (Resolve-Path "src\OrbitConnector.Rhino\bin\Release\net8.0-windows").Path
-          Write-Host "Inno payload: $payload"
-          Get-ChildItem $payload | Format-Table Name,Length
-
           $license = (Resolve-Path "LICENCE.txt").Path
+          $v       = $env:VERSION
 
           & $iscc `
             "/DPayloadDir=$payload" `
@@ -132,8 +136,6 @@ jobs:
             "installers\rhino\inno\OrbitConnector.Rhino.iss"
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit $LASTEXITCODE" }
 
-          # ISCC's OutputDir=. is relative to the .iss; move it next to the
-          # YAK artefacts so the upload step picks both up together.
           $exe = Get-ChildItem "installers\rhino\inno" -Filter "OrbitConnector-Rhino-Setup-v*.exe" | Select-Object -First 1
           if (-not $exe) { throw "Inno Setup did not produce an .exe in installers\rhino\inno" }
           Move-Item -Force $exe.FullName "installers\rhino\dist\"
@@ -143,23 +145,25 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: orbit-connector-windows
+          name: rhino-windows
           path: |
             installers/rhino/dist/orbit-connector-*-rh8-win.yak
             installers/rhino/dist/OrbitConnector-Rhino-Setup-v*.exe
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  build-macos:
+  build-rhino-macos:
+    needs: resolve-version
     runs-on: macos-latest
     timeout-minutes: 30
-    # SCAFFOLD: the csproj is net8.0-windows today, so the build-mac.sh step
-    # exits with a clear error and this job is allowed to fail without
-    # blocking the release. See installers/rhino/MACOS.md.
+    # The csproj is net8.0-windows today, so the build-mac.sh step exits with
+    # a clear error and this job is allowed to fail without blocking the
+    # release. See installers/rhino/MACOS.md. The .dmg wrapper is still
+    # produced regardless (it ships a "use YAK" README).
     continue-on-error: true
-    needs: build-windows
     env:
       NUGET_TOKEN: ${{ secrets.NUGET_TOKEN }}
+      VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -172,48 +176,149 @@ jobs:
           set -euo pipefail
           url='https://files.mcneel.com/yak/tools/latest/yak'
           dest="$RUNNER_TEMP/yak"
-          curl -fsSL "$url" -o "$dest"
-          chmod +x "$dest"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          if curl -fsSL "$url" -o "$dest" 2>/dev/null; then
+            chmod +x "$dest"
+            echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+            echo "Downloaded yak to $dest"
+          else
+            echo "WARNING: YAK download from $url returned a non-2xx status." >&2
+            echo "build-mac.sh will fail later; build-dmg.sh will still run." >&2
+          fi
 
-      - name: Clone Orbit SDK (private sibling repo)
-        # Same reason as the Windows job: csproj needs the SDK source locally
-        # because the SDK isn't published as a NuGet package yet.
-        env:
-          ORBIT_DEPLOY_PAT: ${{ secrets.ORBIT_DEPLOY_PAT }}
+      - name: Clone ORBIT SDK
         run: |
           set -euo pipefail
           sdk_dir="$(dirname "$PWD")/SDK"
           rm -rf "$sdk_dir"
-          if [[ -z "${ORBIT_DEPLOY_PAT:-}" ]]; then
-            echo "secrets.ORBIT_DEPLOY_PAT is required to clone the private orbit-sdk repo" >&2
-            exit 1
-          fi
-          git clone --depth 1 "https://x-access-token:${ORBIT_DEPLOY_PAT}@github.com/REBUS-ORBIT/orbit-sdk.git" "$sdk_dir"
+          git clone --depth 1 https://github.com/REBUS-ORBIT/orbit-sdk.git "$sdk_dir"
           mkdir -p "$sdk_dir/nupkgs"
           echo "Cloned orbit-sdk to $sdk_dir"
 
-      - name: Build Mac YAK packages
+      - name: Build Mac YAK packages (scaffold)
+        # Allowed to fail (job-level continue-on-error catches it).
+        continue-on-error: true
         env:
-          VERSION: ${{ needs.build-windows.outputs.version }}
           ORBIT_SDK_LOCAL: '1'
         run: |
           chmod +x installers/rhino/build-mac.sh
           installers/rhino/build-mac.sh "$VERSION"
 
+      - name: Build .dmg wrapper
+        run: |
+          chmod +x installers/rhino/build-dmg.sh
+          installers/rhino/build-dmg.sh "$VERSION"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: orbit-connector-macos
+          name: rhino-macos
           path: |
             installers/rhino/dist/orbit-connector-*-rh8-mac-*.yak
+            installers/rhino/dist/OrbitConnector-Rhino-Setup-v*.dmg
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  build-vectorworks-windows:
+    needs: resolve-version
+    runs-on: windows-latest
+    timeout-minutes: 15
+    # Scaffold placeholder build; allowed to fail without blocking release.
+    continue-on-error: true
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Vectorworks placeholder .exe
+        shell: pwsh
+        run: |
+          .\installers\vectorworks\build-windows.ps1 -Version $env:VERSION
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vectorworks-windows
+          path: installers/vectorworks/dist/OrbitConnector-Vectorworks-Setup-v*.exe
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  build-vectorworks-macos:
+    needs: resolve-version
+    runs-on: macos-latest
+    timeout-minutes: 15
+    # Scaffold placeholder build; allowed to fail without blocking release.
+    continue-on-error: true
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Vectorworks placeholder .dmg
+        run: |
+          chmod +x installers/vectorworks/build-macos.sh
+          installers/vectorworks/build-macos.sh "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vectorworks-macos
+          path: installers/vectorworks/dist/OrbitConnector-Vectorworks-Setup-v*.dmg
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  build-ue5-windows:
+    needs: resolve-version
+    runs-on: windows-latest
+    timeout-minutes: 15
+    # Scaffold placeholder build; allowed to fail without blocking release.
+    continue-on-error: true
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build UE5 placeholder .exe
+        shell: pwsh
+        run: |
+          .\installers\ue5\build-windows.ps1 -Version $env:VERSION
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ue5-windows
+          path: installers/ue5/dist/OrbitConnector-UE5-Setup-v*.exe
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  build-ue5-macos:
+    needs: resolve-version
+    runs-on: macos-latest
+    timeout-minutes: 15
+    # Scaffold placeholder build; allowed to fail without blocking release.
+    continue-on-error: true
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build UE5 placeholder .dmg
+        run: |
+          chmod +x installers/ue5/build-macos.sh
+          installers/ue5/build-macos.sh "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ue5-macos
+          path: installers/ue5/dist/OrbitConnector-UE5-Setup-v*.dmg
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
   release:
     runs-on: ubuntu-latest
     needs:
-      - build-windows
-      - build-macos    # depends on it but build-macos may fail (continue-on-error)
+      - resolve-version
+      - build-rhino-windows
+      - build-rhino-macos
+      - build-vectorworks-windows
+      - build-vectorworks-macos
+      - build-ue5-windows
+      - build-ue5-macos
     if: startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 10
     permissions:
@@ -221,22 +326,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Windows artefacts
+      - name: Download all artefacts
+        # `download-artifact@v4` without a `name:` downloads every artefact
+        # produced by upstream jobs into separate subfolders under `path:`.
         uses: actions/download-artifact@v4
         with:
-          name: orbit-connector-windows
           path: release-assets
 
-      - name: Download Mac artefacts (if any)
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: orbit-connector-macos
-          path: release-assets
-
-      - name: List artefacts
+      - name: Flatten artefact tree
+        shell: bash
         run: |
-          ls -la release-assets || true
+          set -euo pipefail
+          mkdir -p release-assets/_flat
+          # Each artefact lands in release-assets/<artefact-name>/<file>; we
+          # flatten so softprops/action-gh-release's `files:` globs see them
+          # without having to enumerate every subfolder.
+          find release-assets -type f \( -name "*.yak" -o -name "*.exe" -o -name "*.dmg" -o -name "*.pkg" \) -print0 |
+            while IFS= read -r -d '' f; do
+              cp -v "$f" release-assets/_flat/
+            done
+          echo "----- flat release assets -----"
+          ls -la release-assets/_flat || true
+          echo "-------------------------------"
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -245,11 +356,11 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           notes_file="$(mktemp)"
-          # Pull the section between this version's heading and the next
-          # "## " heading. Falls back to the full changelog if no match.
-          awk -v ver="$tag" '
-            $0 ~ "^## " ver "( |$)" { found=1; print; next }
-            found && /^## / { exit }
+          # Match a heading of the form "## v0.1.1" or "## v0.1.1 — title".
+          # Stop at the next "## v" heading.
+          awk -v tag="$tag" '
+            $0 ~ "^## " tag " " || $0 == "## " tag { found=1; next }
+            found && /^## v/ { exit }
             found { print }
           ' CHANGELOG.md > "$notes_file" || true
           if [[ ! -s "$notes_file" ]]; then
@@ -264,13 +375,19 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          # Human-readable release name: header reads "ORBIT Connectors v0.1.1"
+          # rather than just the tag string.
           name: ORBIT Connectors ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.path }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: false
           files: |
-            release-assets/orbit-connector-*-rh8-win.yak
-            release-assets/OrbitConnector-Rhino-Setup-v*.exe
-            release-assets/orbit-connector-*-rh8-mac-arm64.yak
-            release-assets/orbit-connector-*-rh8-mac-x64.yak
+            release-assets/_flat/orbit-connector-*-rh8-win.yak
+            release-assets/_flat/orbit-connector-*-rh8-mac-*.yak
+            release-assets/_flat/OrbitConnector-Rhino-Setup-v*.exe
+            release-assets/_flat/OrbitConnector-Rhino-Setup-v*.dmg
+            release-assets/_flat/OrbitConnector-Vectorworks-Setup-v*.exe
+            release-assets/_flat/OrbitConnector-Vectorworks-Setup-v*.dmg
+            release-assets/_flat/OrbitConnector-UE5-Setup-v*.exe
+            release-assets/_flat/OrbitConnector-UE5-Setup-v*.dmg

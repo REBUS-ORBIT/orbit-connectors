@@ -19,9 +19,16 @@ artifacts/
 ## Installer build outputs
 installers/rhino/build/
 installers/rhino/dist/
+installers/vectorworks/build/
+installers/vectorworks/dist/
+installers/ue5/build/
+installers/ue5/dist/
 *.yak
 *.pkg
+*.dmg
 OrbitConnector-Rhino-Setup-*.exe
+OrbitConnector-Vectorworks-Setup-*.exe
+OrbitConnector-UE5-Setup-*.exe
 
 ## OS
 .DS_Store

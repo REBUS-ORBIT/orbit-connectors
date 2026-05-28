@@ -1,0 +1,24 @@
+# Force LF line endings for shell scripts and YAML so CI on macOS / Linux
+# can parse them. Without this, Windows checkouts can land them in the repo
+# with CRLF, which breaks `bash` (the shebang line gets a literal \r and
+# fails as "command not found") and confuses `awk`/`sed` in workflows.
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Windows scripts stay CRLF.
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Inno Setup scripts: ISCC accepts both, but the file lives next to other
+# Windows-only assets, so default to CRLF.
+*.iss       text eol=crlf
+
+# Leave binary assets alone.
+*.png       binary
+*.ico       binary
+*.yak       binary
+*.pkg       binary
+*.dmg       binary
+*.exe       binary

@@ -31,8 +31,8 @@ public class RhinoFallbackConverter : IRhinoToOrbitConverter
 
         if (meshes == null || meshes.Length == 0)
         {
-            // Last resort: return an empty ORBIT object so the pipeline does not break
-            return new OrbitBase { ApplicationId = geometry.GetHashCode().ToString() };
+            // Geometry has no displayable mesh (e.g. curve, point, annotation) — skip it
+            throw new NotSupportedException($"No display mesh available for {geometry.GetType().Name}");
         }
 
         if (meshes.Length == 1)

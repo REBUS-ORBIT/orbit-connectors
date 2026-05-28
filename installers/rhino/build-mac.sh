@@ -74,11 +74,14 @@ rm -rf "$STAGE_ROOT"
 for arch in arm64 x64; do
   echo
   echo ">>> Building for osx-${arch}"
+  # OrbitConnectorVersion is the single source of truth (Directory.Build.props);
+  # the csproj inherits Version / AssemblyVersion / FileVersion / InformationalVersion
+  # from it. See RELEASE_POLICY.md.
   dotnet publish "$CSPROJ" \
     -c Release \
     -r "osx-${arch}" \
     --self-contained false \
-    -p:Version="$VERSION" \
+    -p:OrbitConnectorVersion="$VERSION" \
     -o "$STAGE_ROOT/${arch}/publish"
 
   stage="$STAGE_ROOT/${arch}/stage"

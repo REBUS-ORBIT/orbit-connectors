@@ -19,18 +19,72 @@
 ;   2. Licence (MIT placeholder until the maintainer drops a real LICENCE.txt
 ;      at repo root or passes /DLicenseFile)
 ;   3. Rhino version pick (8 default; reserved for future 7 support)
-;   4. Install dir picker (defaults to %APPDATA%\McNeel\Rhinoceros\packages\8.0\
-;      OrbitConnector\<version>, the same per-version layout YAK uses)
+;   4. Install dir picker (defaults to %LOCALAPPDATA%\Programs\OrbitConnector\
+;      Rhino\<version>, OUTSIDE any Rhino-managed directory tree).
 ;   5. Install
 ;   6. Finish
 ;
 ; AppId MUST stay constant across releases so Windows recognises upgrades.
 ; Do not regenerate this GUID.
+;
+; -----------------------------------------------------------------------------
+; v0.1.4 INSTALLER PATH HOTFIX  (refined in v0.1.5 -- see below)
+; -----------------------------------------------------------------------------
+; Earlier v0.1.x installers (0.1.0 - 0.1.3) wrote the payload to
+;   %APPDATA%\McNeel\Rhinoceros\packages\8.0\OrbitConnector\<version>\
+; That path is Rhino's YAK Package Manager managed root. Rhino scans it on
+; every launch, compares each subfolder against its internal package registry,
+; and any folder Rhino didn't install itself is treated as an "uninstalled
+; package" and wiped (Rhino's startup log shows the smoking gun:
+;   [PackageManager] Cleaning up uninstalled packages...
+;   [PackageManager] Removing OrbitConnector
+; ).
+;
+; Net effect on v0.1.3: the .rhp got deleted before Rhino's plug-in loader
+; could find it, the auto-register registry key pointed at a nonexistent file,
+; and the Start Menu shortcut for "Install in Rhino 8" became a broken link.
+;
+; v0.1.4 moves the payload OUT of any Rhino-managed path. The HKCU plug-in
+; registry entry still points Rhino's separate plug-in loader at the .rhp's
+; full path, so auto-load on startup keeps working as designed in v0.1.3.
+; A post-install [Code] hook also tidies up any orphan v0.1.x folder still
+; sitting in the YAK-managed dir from a prior install.
+;
+; -----------------------------------------------------------------------------
+; v0.1.5 ADDENDUM
+; -----------------------------------------------------------------------------
+; v0.1.4 had one missing piece: when Inno Setup detects a previous install
+; with the same AppId, by default it re-uses that install's location instead
+; of the .iss script's DefaultDirName. So a user upgrading 0.1.3 -> 0.1.4 in
+; place ended up with the new payload still being written to the OLD
+; YAK-managed dir (because Inno read the InstallLocation value from the
+; v0.1.3 uninstall registry key). Then the post-install cleanup hook
+; DelTree'd the parent, wiping the brand-new install.
+;
+; Two changes in v0.1.5 close that gap:
+;
+;   1. UsePreviousAppDir=no in [Setup] -- always honour DefaultDirName,
+;      regardless of whatever directory a previous install left behind.
+;   2. PrivilegesRequiredOverridesAllowed=dialog removed -- prevents the
+;      installer from auto-elevating into HKLM/ProgramData when a previous
+;      admin install of the same AppId is detected on the machine. With
+;      PrivilegesRequired=lowest as the only directive, every install is
+;      a per-user install, full stop.
+;   3. Safety belt in CleanupOrphanYakDir -- if {app} is somehow inside
+;      the YAK-managed dir tree, abort cleanup. (Should never trigger with
+;      UsePreviousAppDir=no in place; defensive against future regressions.)
 ; -----------------------------------------------------------------------------
 
 #define AppName       "ORBIT Connector for Rhino"
 #define AppPublisher  "REBUS-ORBIT"
 #define AppId         "{{D7E4A9C2-3F8B-4A11-9E07-1B5C6D8E2F40}"
+
+; PluginGuid MUST match the [assembly: Guid(...)] attribute on the Rhino
+; plug-in assembly (see src/OrbitConnector.Rhino/Properties/AssemblyInfo.cs).
+; Rhino uses this GUID as the plug-in's persistent identity under
+;   HKCU\Software\McNeel\Rhinoceros\8.0\Plug-ins\{<PluginGuid>}.
+; Update both together; never regenerate independently.
+#define PluginGuid    "4F3A2B1C-8E5D-4A9F-B6C2-1D7E3F4A5B6C"
 
 #ifndef ConnectorVersion
   #define ConnectorVersion "0.0.0"
@@ -53,18 +107,27 @@ AppPublisher={#AppPublisher}
 AppPublisherURL=https://github.com/REBUS-ORBIT/orbit-connectors
 AppSupportURL=https://github.com/REBUS-ORBIT/orbit-connectors/issues
 AppUpdatesURL=https://github.com/REBUS-ORBIT/orbit-connectors/releases/latest
-; Default per-user McNeel package path. Per-version subdir matches YAK's
-; %APPDATA%\McNeel\Rhinoceros\packages\<rhino-major>\<package>\<version>\
-; layout, which keeps Rhino's plug-in manager happy on a side-by-side install.
-DefaultDirName={userappdata}\McNeel\Rhinoceros\packages\8.0\OrbitConnector\{#ConnectorVersion}
+; Per-user Programs folder, OUTSIDE any Rhino-managed directory. Resolves to
+; C:\Users\<user>\AppData\Local\Programs\OrbitConnector\Rhino\<version>\
+; with PrivilegesRequired=lowest below. Rhino's YAK Package Manager does not
+; touch this path, so the .rhp survives every Rhino startup.
+DefaultDirName={localappdata}\Programs\OrbitConnector\Rhino\{#ConnectorVersion}
 DefaultGroupName=ORBIT
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 AllowNoIcons=yes
+; Critical for the v0.1.x path migration: honour DefaultDirName above
+; instead of any InstallLocation value left over from a previous install
+; (which on an in-place 0.1.3 -> 0.1.4 upgrade would point right back at
+; the YAK-managed dir we are trying to escape).
+UsePreviousAppDir=no
 ; Per-user install: writes only to %APPDATA% + %LOCALAPPDATA%, no admin needed.
-; Matches Rhino's own package manager behaviour.
+; PrivilegesRequiredOverridesAllowed is intentionally NOT set: when a
+; previous admin install of the same AppId is on the machine, leaving the
+; override allowed causes Inno to silently elevate (HKLM uninstall key,
+; ProgramData Start Menu) to keep the upgrade consistent with the previous
+; admin install. We don't want that -- every install is per-user.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64
 ArchitecturesAllowed=x64
 LicenseFile={#LicenseFile}
@@ -94,15 +157,119 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; \
         Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Registry]
+; -----------------------------------------------------------------------------
+; Rhino 8 per-user plug-in registration.
+;
+; Writes the discovery keys Rhino reads on startup, so the plug-in loads
+; automatically on the next Rhino launch without the user needing to
+; drag-drop the .rhp first or run the "Install in Rhino 8" Start Menu
+; shortcut. Per-user (HKCU) matches PrivilegesRequired=lowest above.
+;
+; The GUID is written as a bare hex string with no enclosing braces --
+; this matches the convention Rhino itself uses when it registers a
+; plug-in from a drag-drop or `_PluginManager` install, and matches every
+; existing key under `HKCU\Software\McNeel\Rhinoceros\8.0\Plug-ins\` on a
+; standard Rhino 8 install. Both forms parse as a valid System.Guid, but
+; no-braces is the form Rhino's reader emits and matches.
+;
+; -----------------------------------------------------------------------------
+; v0.1.7 fix -- the smoking gun behind the "initialization failed" dialog.
+; -----------------------------------------------------------------------------
+; v0.1.3 .. v0.1.6 wrote only Name + FileName here. That's enough for Rhino
+; to LIST the plug-in in PluginManager but NOT enough for Rhino to actually
+; load it at startup. Without LoadMode / Type / IsDotNETPlugIn / Description,
+; Rhino's plug-in scanner skipped the entry on cold-start and left the user
+; staring at the "Unable to load OrbitConnector.Rhino.rhp plug-in:
+; initialization failed." dialog. (Reproduced live by bisecting against the
+; official v0.1.6 .rhp on a clean machine: with only Name+FileName Rhino
+; never invokes the plug-in's static cctor; once LoadMode + IsDotNETPlugIn
+; are present Rhino loads and Panels.RegisterPanel succeeds first try.)
+;
+; The fix is to ship the full set Rhino normally writes back after a first
+; successful load:
+;
+;   LoadMode        = 1   -> PlugInLoadTime.LoadAtStartup
+;   Type            = 16  -> RhinoPlugInType.General
+;   IsDotNETPlugIn  = 1
+;   Description     = <human description>
+;   AddToHelpMenu   = 0
+;   EnglishName     = OrbitConnector.Rhino  (assembly name, used by Rhino)
+;
+; Plus the FileName the installer already wrote. Anything Rhino infers from
+; the plug-in itself (commands, panels, exact display Name) gets layered on
+; top of these defaults on first successful load -- we deliberately do not
+; pre-write CommandList / Panels subkeys.
+; -----------------------------------------------------------------------------
+;
+; Flags: uninsdeletekey on the first entry so uninstall removes the GUID
+; subkey (and every value under it) cleanly. The other entries share the
+; same key, no separate flag needed.
+;
+; On upgrade (e.g. 0.1.6 -> 0.1.7), Inno Setup overwrites the FileName
+; value with the current {app} path -- so the registry always points at
+; the version that's actually installed.
+; -----------------------------------------------------------------------------
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: string; ValueName: "Name"; ValueData: "{#AppName}"; \
+  Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: string; ValueName: "FileName"; ValueData: "{app}\OrbitConnector.Rhino.rhp"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: dword; ValueName: "LoadMode"; ValueData: "1"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: dword; ValueName: "Type"; ValueData: "16"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: dword; ValueName: "IsDotNETPlugIn"; ValueData: "1"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: dword; ValueName: "AddToHelpMenu"; ValueData: "0"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: string; ValueName: "EnglishName"; ValueData: "OrbitConnector.Rhino"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}"; \
+  ValueType: string; ValueName: "Description"; ValueData: "{#AppName}"
+
+; -----------------------------------------------------------------------------
+; v0.1.7 -- also clear stale state from prior broken installs so the upgrade
+; actually re-attempts loading.
+;
+; - Plug-ins\<guid>\PlugIn\FileName -- written by Rhino on first successful
+;   load and used in preference to the parent FileName value. If a previous
+;   broken install left this pointing at a path Rhino can't find, scan halts
+;   before the plug-in's own AssemblyLoad is even attempted. Re-pointing it
+;   at the current {app}\OrbitConnector.Rhino.rhp forces Rhino to retry
+;   against the freshly-installed payload.
+; - Global Options\Plug-ins\<guid>\LoadProtection -- not actually load-
+;   gating in Rhino 8 on the tested machine (observed values 1..5 all still
+;   load) but cleaning it here is defensive: any future version of Rhino
+;   that gates on a 'previous crash' marker stored here gets a clean slate
+;   on every upgrade.
+; -----------------------------------------------------------------------------
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Plug-ins\{#PluginGuid}\PlugIn"; \
+  ValueType: string; ValueName: "FileName"; ValueData: "{app}\OrbitConnector.Rhino.rhp"
+Root: HKCU; Subkey: "Software\McNeel\Rhinoceros\8.0\Global Options\Plug-ins\{#PluginGuid}"; \
+  ValueType: none; ValueName: "LoadProtection"; \
+  Flags: deletevalue
+
 [Icons]
-; Lightweight Start Menu entry pointing at the .rhp file. Double-clicking it
-; in Explorer hands off to Rhino, which is the canonical "install plug-in" UX.
+; Manual fallback Start Menu entry pointing at the .rhp file. The installer
+; already registers the plug-in automatically (see [Registry] above) so this
+; shortcut is rarely needed -- it's kept for the edge cases where Rhino was
+; running during install, the user wants to register against a different
+; Rhino version, or some other manual reset is required.
 Name: "{group}\Install in Rhino 8"; Filename: "{app}\OrbitConnector.Rhino.rhp"; \
-  Comment: "Launches Rhino to register the ORBIT connector"
+  Comment: "Manually re-register the connector with Rhino (usually not needed -- installer registers automatically)"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
+; URL shortcut to the GitHub releases page. This is intentionally added
+; because its target is a URL rather than a file -- if the .rhp ever gets
+; deleted (for whatever reason), this shortcut still resolves and keeps
+; the "ORBIT" Start Menu folder visible to the user as a marker that the
+; install completed.
+Name: "{group}\ORBIT Connector Updates"; \
+  Filename: "https://github.com/REBUS-ORBIT/orbit-connectors/releases/latest"; \
+  Comment: "Open the ORBIT Connectors release page on GitHub"
 
 [Messages]
-FinishedLabel=ORBIT Connector for Rhino has been installed.%n%nThe plug-in will load automatically the next time you start Rhino 8. If Rhino is already running you will need to restart it.
+FinishedLabel=ORBIT Connector for Rhino has been installed and registered with Rhino 8.%n%nThe plug-in will load automatically the next time you start Rhino. If Rhino is currently running, restart it to load the connector.
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
@@ -142,4 +309,120 @@ begin
       end;
     end;
   end;
+end;
+
+// ---------------------------------------------------------------------------
+// v0.1.4 post-install cleanup of orphan YAK-managed-dir leftovers from
+// v0.1.0 - v0.1.3. See header comment for the full root-cause writeup.
+//
+// Path we want to remove:
+//   %APPDATA%\McNeel\Rhinoceros\packages\8.0\OrbitConnector\
+//
+// We DO NOT publish this connector through McNeel's YAK package registry,
+// so the only way that directory exists on the user's machine is leftover
+// from an earlier (broken) Inno install. Even so, we belt-and-brace it:
+//   1. Skip cleanup if {app} is somehow inside the YAK-managed dir tree
+//      (defensive: should never trigger with UsePreviousAppDir=no).
+//   2. Skip cleanup if Rhino is currently running (file locks would fail
+//      the delete and the user would think the new install was broken).
+//   3. Use Inno's built-in DelTree which already silently no-ops on
+//      missing paths, so the cleanup runs harmlessly on a fresh machine.
+// ---------------------------------------------------------------------------
+
+function GetOrphanYakDir(): String;
+begin
+  Result := ExpandConstant('{userappdata}\McNeel\Rhinoceros\packages\8.0\OrbitConnector');
+end;
+
+function IsRhinoRunning(): Boolean;
+var
+  ResultCode: Integer;
+  TempFile:   String;
+  TempLines:  TArrayOfString;
+  i:          Integer;
+begin
+  // Best-effort detection: shell out to tasklist with a Rhino.exe filter
+  // and grep the output. If anything in this chain fails (tasklist missing,
+  // file write blocked, etc.) we fall back to "not running" so we don't
+  // skip cleanup forever.
+  Result := False;
+  TempFile := ExpandConstant('{tmp}\rhino-running-check.txt');
+
+  if not Exec(ExpandConstant('{cmd}'),
+              '/C tasklist /FI "IMAGENAME eq Rhino.exe" /NH > "' + TempFile + '" 2>&1',
+              '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Exit;
+
+  if not LoadStringsFromFile(TempFile, TempLines) then
+  begin
+    DeleteFile(TempFile);
+    Exit;
+  end;
+
+  for i := 0 to GetArrayLength(TempLines) - 1 do
+  begin
+    if Pos('Rhino.exe', TempLines[i]) > 0 then
+    begin
+      Result := True;
+      Break;
+    end;
+  end;
+
+  DeleteFile(TempFile);
+end;
+
+procedure CleanupOrphanYakDir();
+var
+  YakDir:    String;
+  YakLower:  String;
+  AppLower:  String;
+begin
+  YakDir := GetOrphanYakDir();
+
+  if not DirExists(YakDir) then
+  begin
+    Log('CleanupOrphanYakDir: no orphan dir at ' + YakDir + ' (clean machine).');
+    Exit;
+  end;
+
+  // Safety belt (v0.1.5): never delete the YAK-managed dir if {app} is
+  // inside it. With UsePreviousAppDir=no in [Setup], {app} is always
+  // %LOCALAPPDATA%\Programs\OrbitConnector\Rhino\<v>\, so this guard
+  // should never fire -- it exists to protect against a future regression
+  // re-introducing the v0.1.4 self-destruct.
+  YakLower := Lowercase(AddBackslash(YakDir));
+  AppLower := Lowercase(AddBackslash(ExpandConstant('{app}')));
+  if Pos(YakLower, AppLower) = 1 then
+  begin
+    Log('CleanupOrphanYakDir: {app} (' + ExpandConstant('{app}') +
+        ') is inside YakDir (' + YakDir + ') -- aborting cleanup to avoid' +
+        ' deleting the just-installed payload.');
+    Exit;
+  end;
+
+  if IsRhinoRunning() then
+  begin
+    Log('CleanupOrphanYakDir: Rhino is running -- skipping cleanup of ' + YakDir);
+    MsgBox(
+      'NOTE: A folder from an earlier ORBIT Connector install was detected in' + #13#10 +
+      'Rhino''s YAK-managed directory:' + #13#10 + #13#10 +
+      YakDir + #13#10 + #13#10 +
+      'Rhino is currently running, so cleanup was skipped. Close Rhino and' + #13#10 +
+      'delete this folder manually after installation, or simply re-run this' + #13#10 +
+      'installer with Rhino closed and it will be cleaned up automatically.',
+      mbInformation, MB_OK);
+    Exit;
+  end;
+
+  Log('CleanupOrphanYakDir: removing orphan dir at ' + YakDir);
+  if DelTree(YakDir, True, True, True) then
+    Log('CleanupOrphanYakDir: DelTree succeeded.')
+  else
+    Log('CleanupOrphanYakDir: DelTree failed (non-fatal, continuing).');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    CleanupOrphanYakDir();
 end;
