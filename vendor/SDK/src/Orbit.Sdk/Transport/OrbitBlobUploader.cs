@@ -22,10 +22,16 @@ public sealed class OrbitBlobUploader : IDisposable
 {
     private readonly HttpClient _http;
     private readonly string _uploadUrl;
+    private readonly Action<string>? _log;
 
-    public OrbitBlobUploader(string serverUrl, string streamId, string authToken)
+    public OrbitBlobUploader(
+        string serverUrl,
+        string streamId,
+        string authToken,
+        Action<string>? log = null)
     {
         _uploadUrl = $"{serverUrl.TrimEnd('/')}/api/stream/{streamId}/blob";
+        _log = log;
 
         _http = new HttpClient();
         _http.DefaultRequestHeaders.Authorization =
@@ -62,12 +68,28 @@ public sealed class OrbitBlobUploader : IDisposable
         try
         {
             var response = await _http.PostAsync(_uploadUrl, form, ct);
-            if (!response.IsSuccessStatusCode) return result;
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = string.Empty;
+                try { body = await response.Content.ReadAsStringAsync(ct); }
+                catch { /* response body diagnostic only */ }
+                _log?.Invoke(
+                    $"[ORBIT] blob-upload: POST {_uploadUrl} -> " +
+                    $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}. " +
+                    $"body={(body.Length > 200 ? body.Substring(0, 200) + "…" : body)}");
+                return result;
+            }
 
             var json = await response.Content.ReadAsStringAsync(ct);
             var jObj = JObject.Parse(json);
             var uploadResults = jObj["uploadResults"] as JArray;
-            if (uploadResults == null) return result;
+            if (uploadResults == null)
+            {
+                _log?.Invoke(
+                    $"[ORBIT] blob-upload: POST {_uploadUrl} -> 2xx but no `uploadResults` " +
+                    "array in response body. Server rejected the multipart payload silently.");
+                return result;
+            }
 
             foreach (var item in uploadResults)
             {
@@ -77,9 +99,10 @@ public sealed class OrbitBlobUploader : IDisposable
                     result[fileName] = blobId;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Best-effort: if upload fails, textures are simply unresolved.
+            _log?.Invoke(
+                $"[ORBIT] blob-upload: POST {_uploadUrl} threw {ex.GetType().Name}: {ex.Message}");
         }
 
         return result;

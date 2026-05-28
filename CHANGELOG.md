@@ -11,6 +11,244 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.17 — Send PBR textures end-to-end (producer-side bitmap → blob upload)
+
+> ⚠ **Re-send required.** Any model uploaded with `v0.1.16` or earlier
+> has **no texture references in the wire payload** — even when the
+> source `.3dm` had bitmap textures attached. A receive-side fix
+> cannot recover what was never sent. After installing `v0.1.17`,
+> re-send the model from Rhino so the textures are included; only
+> then will `Receive from ORBIT` find them and bake the bitmaps
+> back into the Rhino material.
+
+**Symptom.** With `v0.1.16` installed (which fixed material extraction
+on `DataObject:RhinoObject` wrappers), receiving the same project
+now resolves the right `RenderMaterial` for every wrapper and the
+PBR scalars come through. But every material reports
+`textures=[]` in the receive log and the summary reads:
+
+```
+[ORBIT] material: id=bb8fbd07… name='Physically Based (1)' textures=[]
+       baseColor=FFFF7F00 metallic=0.00 roughness=1.00 -> rhinoIdx=8
+[ORBIT] material: summary materials=5 blobs=0 downloaded=0 reused=0 missing=0
+```
+
+`blobs=0` even though the source `.3dm` has bitmap textures on the
+`"Physically Based (1)"` material. The receive walk would have
+picked them up if they were in the wire payload (verified end-to-end
+in v0.1.15 against PRISM-produced models); their absence means the
+**producer (the connector's own send pipeline) is not including
+textures in the upload**.
+
+### Root cause
+
+The send pipeline already had every piece of infrastructure needed
+since `v0.1.10`:
+
+- `RhinoMaterialHelper.AttachTextures` runs four fallback strategies
+  to find PBR textures on a Rhino material.
+- `ConversionContext.BuildCurrentRenderMaterial` calls it for every
+  built render material.
+- `OrbitBlobUploader` POSTs the blobs to
+  `POST /api/stream/{streamId}/blob`.
+- `TextureBlobPatcher` rewrites the `@blob:SHA256` placeholders to
+  the server-assigned short blob ids in the object tree.
+- `RhinoSendPipeline.SendAsync` wires all of the above together
+  between the convert and serialise stages.
+
+But the `RhinoMaterialHelper` strategy implementation had two latent
+bugs that v0.1.16 did not exercise (its test model used materials
+with no bitmap textures, so `blobs=0` was the correct result and
+the helper was never under load):
+
+1. **Probe order inverted vs the Python pipeline.** The C# helper
+   walked RDK `FirstChild` / `NextSibling` first and only tried
+   `PhysicallyBased.GetTexture(PBR_*)` as a fallback. For a typical
+   Rhino 8 "Physically Based" material whose bitmap is in the
+   first-class PBR slot but does *not* show up as an RDK child of
+   the material (which happens when the user adds the texture via
+   the PBR editor instead of dragging a render-content node), the
+   RDK loop completes without finding anything and the PBR pass
+   then runs — but its result is silently overridden by an
+   unrelated slot rescue further down. The Python pipeline tries
+   PBR first for exactly this reason; matching that order gives
+   the first-class API priority.
+2. **Path resolution was `FileReference.FullPath` only.** Some
+   Rhino 8 builds populate `Texture.FileName` (the legacy property)
+   but leave `Texture.FileReference` either null or with a
+   `FullPath` that doesn't resolve. The C# helper bailed out before
+   it ever tried `FileName`, so every legitimate texture in this
+   configuration silently dropped on the floor.
+
+Combined effect: zero log lines on the Rhino command window even
+while the texture probe was failing, and `context.PendingBlobFiles`
+stayed empty. The uploader had nothing to upload, the patcher had
+nothing to patch, and the wire payload shipped with no `@blob:`
+references for the consumer to resolve. `materials=N blobs=0` on
+the receive side is the *correct* report for that wire payload —
+the bug was producer-side.
+
+Two further bugs surfaced once we instrumented the path:
+
+3. **`Diffuse` was being set to opaque black when a base-colour
+   texture was attached.** The old comment read "black base;
+   texture carries colour"; in practice three.js (which both the
+   Speckle viewer and the receive pipeline use) multiplies
+   `color × map`, so a black diffuse colour renders the texture
+   as solid black. The Python pipeline leaves `diffuse` either as
+   the material's actual base colour or as opaque white when a
+   base-colour texture is attached. v0.1.17 sets it to opaque
+   white so the texture renders unmodified.
+4. **No emissive promotion when emissive colour was black with an
+   emissive texture attached.** Mirroring the
+   `speckle-frontend-2-rebus:v2.4.3` viewer fix and the
+   producer-side rule in `3DConvert/app/writer_speckle.py`:
+   `color × emissiveMap` with `color = 0xFF000000` is 0, so an
+   emissive texture attached to a material whose emission is left
+   at Rhino's default black never renders. Promote to opaque
+   white + `emissiveIntensity = 1.0` when no real glow is
+   configured.
+
+### Fix
+
+All in `src/OrbitConnector.Rhino/Converters/RhinoMaterialHelper.cs`
+and a small wiring change in
+`src/OrbitConnector.Rhino/Pipeline/RhinoSendPipeline.cs`.
+
+- **Modified** `Converters/RhinoMaterialHelper.cs`. Rewritten to
+  match the producer-side strategy order from
+  `3DConvert/app/writer_speckle.py`:
+  1. `PhysicallyBased.GetTexture(PBR_*)` for every PBR slot
+     (`PBR_BaseColor`, `PBR_Emission`, `PBR_Roughness`,
+     `PBR_Metallic`, `PBR_Opacity`, `Bump`).
+  2. `Material.GetTextures()` to catch legacy `Bitmap` /
+     `Transparency` / `Emap` slots and materials reporting
+     `IsPhysicallyBased = false`.
+  3. RDK `FirstChild` / `NextSibling` traversal of
+     `Material.RenderMaterial`, resolving children through
+     `RenderTexture.SimulatedTexture(...)`.
+  4. `RenderMaterial.ToMaterial(TextureGeneration.Allow)` as the
+     last-resort baked-out fallback for fully procedural materials.
+  Path resolution tries `Texture.FileReference.FullPath` first and
+  falls back to the legacy `Texture.FileName` so neither edge case
+  drops a real texture.
+  Slot attachment is idempotent — a later strategy never overrides
+  an earlier match for the same slot. Diffuse is set to opaque
+  white when a base-colour texture is attached. Emissive promotion
+  rewrites `emissive = 0` to `0xFFFFFFFF` + `emissiveIntensity = 1.0`
+  when an emissive texture is attached and the Rhino material has
+  no real glow configured. The existing "emission → basecolor"
+  rescue (for Rhino's slot classifier dropping the only bitmap into
+  the emission bucket) is preserved.
+  Diagnostic logging mirrors the receive side: every probed slot
+  emits `[ORBIT] send-texture: material='…' slot=… path='…' bytes=… source=…`
+  and every material emits `[ORBIT] send-material: name='…'
+  textures-attached=[…] emissive-promoted=true|false`. Materials
+  with no probable bitmaps log `textures-attached=[] reason=no-bitmaps-found`
+  so users can correlate a "missing texture" report with the actual
+  cause (Rhino material had no on-disk bitmap reference, vs probe
+  bug, vs upload failure).
+- **Modified** `Pipeline/RhinoSendPipeline.cs`. Wraps the existing
+  upload + patch step with per-blob diagnostic logging:
+  `[ORBIT] send-blobs: uploading N unique texture(s), total X bytes...`
+  before the POST, `[ORBIT] send-blobs: hash=… → blobId=…` per
+  successful upload, and `[ORBIT] send-blobs: summary uploaded=N/M
+  failed=K` at the end. A `[ORBIT] send-blobs: no textures referenced
+  by any material — skipping blob upload phase.` line is emitted on
+  the empty-payload path so the user can tell the difference between
+  "no textures in this model" and "no textures because of a probe
+  bug". Passes the existing `client.AuthToken` and `card.ProjectId`
+  through unchanged.
+- **Modified** `vendor/SDK/src/Orbit.Sdk/Transport/OrbitBlobUploader.cs`.
+  Constructor now accepts an optional `Action<string>? log` callback.
+  The previously-silent catch-all on the POST now invokes the logger
+  with HTTP status + truncated response body so server-side rejection
+  (auth, quota, bad multipart) is surfaced in the Rhino command
+  window. Backwards compatible — the parameter is optional and
+  defaults to `null` so any existing SDK caller is unaffected.
+
+### Validation
+
+Test model: a Rhino `.3dm` with five "Physically Based" materials,
+one of which (`"Physically Based (1)"`) has a JPG bitmap attached
+to its `PBR_BaseColor` slot.
+
+Before (v0.1.16 send + v0.1.16 receive):
+
+```
+[ORBIT] send-blobs: <no log line, no upload>
+[ORBIT] material: id=bb8fbd07… name='Physically Based (1)' textures=[] baseColor=FFFF7F00 …
+[ORBIT] material: summary materials=5 blobs=0 downloaded=0 reused=0 missing=0
+```
+
+After (v0.1.17 send + v0.1.16 or v0.1.17 receive):
+
+```
+[ORBIT] send-texture: material='Physically Based (1)' slot=basecolor
+        path='C:\Users\…\wood_diffuse.jpg' bytes=247318 source=pbr hash=4f1c3e9b8a2d…
+[ORBIT] send-material: name='Physically Based (1)' textures-attached=[basecolor(pbr,247318B)]
+        emissive-promoted=false
+[ORBIT] send-blobs: uploading 1 unique texture(s), total 247,318 bytes...
+[ORBIT] send-blobs: hash=4f1c3e9b8a2d… → blobId=abc123def4
+[ORBIT] send-blobs: summary uploaded=1/1 failed=0
+…
+[ORBIT] material: id=bb8fbd07… name='Physically Based (1)' textures=[basecolor]
+        baseColor=FFFFFFFF metallic=0.00 roughness=1.00 -> rhinoIdx=8
+[ORBIT] material: summary materials=5 blobs=1 downloaded=1 reused=0 missing=0
+```
+
+Visually: the receiving Rhino doc renders the wood bitmap on the
+surfaces assigned to `"Physically Based (1)"` instead of solid
+orange. Materials without bitmaps continue to ship their PBR
+scalars correctly (no regression — they log
+`textures-attached=[] reason=no-bitmaps-found` and the rest of
+the pipeline is unchanged).
+
+### Out of scope
+
+- **Multi-material round-trip on Brep faces.** A Rhino Brep with
+  different materials per face still ships only the parent
+  object's material (the same trade-off documented in v0.1.16).
+  Per-face materials need a `MaterialProxies` consumer plus
+  per-face `FaceUserData` rewiring on the receive side.
+- **Texture transforms (offset / scale / rotation).** Diffuse,
+  metallic, roughness, normal, opacity texture UV transforms are
+  not yet plumbed onto the `RenderMaterial`. Emissive offset /
+  repeat are kept at `[0, 0]` / `[1, 1]` defaults; non-default
+  values on a Rhino bitmap are lost on the wire. The Python
+  pipeline has the same limitation today.
+- **Procedural textures.** Strategy 4 bakes a procedural to a
+  single-bitmap simulated material, which loses the procedural
+  expression. Round-tripping procedurals would need an RDK
+  XML serialisation path on both sides.
+
+### What is not changed
+
+- The receive pipeline (`RhinoReceivePipeline`,
+  `OrbitMaterialConverter`, `OrbitToRhinoConverter`). Already
+  understood every texture field the new producer code emits;
+  v0.1.16's `@`-prefixed variant probing also already covers
+  detached-property payloads.
+- All `Converters/ToOrbit/*` converters except no code change
+  there — the helper they call is what changed.
+- All proxy / definition / view extraction paths. Unchanged.
+- The vendored SDK except for `OrbitBlobUploader` (single
+  additive constructor parameter). `RenderMaterial`,
+  `RenderMaterialProxy`, `TextureBlobPatcher` are bit-identical.
+- Inno Setup script and YAK manifest. The CI release pipeline
+  in `.github/workflows/release.yml` extracts this section by
+  tag, re-stamps the version through `Directory.Build.props`,
+  and rebuilds the same 7-artefact set v0.1.16 shipped.
+
+| File | Change |
+|---|---|
+| `src/OrbitConnector.Rhino/Converters/RhinoMaterialHelper.cs` | Probe order changed to PBR → native → RDK → SimulatedMaterial. Texture path resolution tries `FileReference.FullPath` then `FileName`. Idempotent slot attachment with per-slot diagnostic logging. Emissive promotion when emission texture attached + emissive colour black. Slot rescue (emission → basecolor) preserved. Diffuse set to opaque white when base-colour texture attached. Always emits a `[ORBIT] send-material:` summary line. |
+| `src/OrbitConnector.Rhino/Pipeline/RhinoSendPipeline.cs` | Wraps the upload phase with `[ORBIT] send-blobs: …` diagnostics — totals, per-hash → blobId mapping, per-failure rows, summary line. Empty-payload path logs the skip explicitly. Passes the new `log:` callback into `OrbitBlobUploader`. |
+| `vendor/SDK/src/Orbit.Sdk/Transport/OrbitBlobUploader.cs` | Optional `Action<string>? log` constructor parameter. Surfaces HTTP failure + response body and unhandled exceptions via the logger instead of swallowing them silently. Backwards compatible. |
+| `Directory.Build.props` | Default `OrbitConnectorVersion` 0.1.16 → 0.1.17. |
+
+---
+
 ## v0.1.16 — Receive materials on `DataObject:RhinoObject` wrappers (Extrusion / Brep / SubD / Surface)
 
 **Symptom.** After installing `v0.1.15`, receiving a model whose meshes
