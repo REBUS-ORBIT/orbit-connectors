@@ -88,10 +88,50 @@ public class RhinoSendPipeline
         if (context.PendingBlobFiles.Count > 0)
         {
             progress?.Report(($"Uploading {context.PendingBlobFiles.Count} texture(s)…", 36));
+
+            long totalBytes = 0;
+            foreach (var p in context.PendingBlobFiles.Values)
+            {
+                try
+                {
+                    if (File.Exists(p)) totalBytes += new FileInfo(p).Length;
+                }
+                catch { /* size is informational only */ }
+            }
+            RhinoApp.WriteLine(
+                $"[ORBIT] send-blobs: uploading {context.PendingBlobFiles.Count} unique " +
+                $"texture(s), total {totalBytes:N0} bytes...");
+
             using var blobUploader = new OrbitBlobUploader(
-                client.ServerUrl, card.ProjectId!, client.AuthToken);
+                client.ServerUrl, card.ProjectId!, client.AuthToken,
+                log: msg => RhinoApp.WriteLine(msg));
             var hashToServerId = await blobUploader.UploadAsync(context.PendingBlobFiles, ct);
+
+            foreach (var (hash, blobId) in hashToServerId)
+            {
+                RhinoApp.WriteLine(
+                    $"[ORBIT] send-blobs: hash={hash.Substring(0, Math.Min(16, hash.Length))}… → blobId={blobId}");
+            }
+            var failed = context.PendingBlobFiles.Keys
+                .Where(h => !hashToServerId.ContainsKey(h))
+                .ToList();
+            foreach (var hash in failed)
+            {
+                RhinoApp.WriteLine(
+                    $"[ORBIT] send-blobs: hash={hash.Substring(0, Math.Min(16, hash.Length))}… FAILED " +
+                    "(not in upload response — viewer will fall back to diffuse colour)");
+            }
+            RhinoApp.WriteLine(
+                $"[ORBIT] send-blobs: summary uploaded={hashToServerId.Count}/" +
+                $"{context.PendingBlobFiles.Count} failed={failed.Count}");
+
             TextureBlobPatcher.Patch(root, hashToServerId);
+        }
+        else
+        {
+            RhinoApp.WriteLine(
+                "[ORBIT] send-blobs: no textures referenced by any material — " +
+                "skipping blob upload phase.");
         }
 
         // 3. SERIALISE
