@@ -683,6 +683,16 @@ public class RhinoReceivePipeline
         if (TryDechunkTextureCoordinates(geoObj, state.Objects, out var uvResolved))
             geoObj = uvResolved;
 
+        // v0.1.16: defensively resolve `@displayValue` array stubs on the leaf
+        // itself so the RhinoObject-material lookup below sees inline mesh
+        // objects (and so the display-mesh fallback in the converter has
+        // something to render when there is no rawEncoding). For leaves
+        // reached via TraverseAndBakeChild this is a no-op (already resolved
+        // there); for a RhinoObject root that walks directly into BakeLeaf it
+        // is the only resolution pass that runs.
+        if (TryResolveDetachedArray(geoObj, "displayValue", state.Objects, out var dvResolvedLeaf))
+            geoObj = dvResolvedLeaf;
+
         var geometry = state.Converter.Convert(geoObj);
         if (geometry == null)
         {
@@ -723,12 +733,52 @@ public class RhinoReceivePipeline
         // populates the per-object ObjectColor from renderMaterial.diffuse
         // for materials we couldn't build into a real Rhino material
         // (e.g. when MaterialConverter is null after a prefetch failure).
+        //
+        // v0.1.16: extend the material lookup to RhinoObject DataObjects.
+        // The producer (RhinoBrepConverter.BuildWrapper, called by
+        // RhinoBrepConverter / RhinoExtrusionConverter / RhinoSubDConverter /
+        // RhinoSurfaceConverter) wraps native Rhino geometry in a
+        // `Objects.Data.DataObject:Objects.Data.RhinoObject` carrying:
+        //   - `rawEncoding` (or detached `@rawEncoding`): single-object .3dm
+        //     bytes for byte-for-byte native round-trip
+        //   - `displayValue` (or detached `@displayValue`): per-face mesh
+        //     fragments tessellated from the same Brep, each one carrying
+        //     ITS OWN `renderMaterial` (and `colorSource`, `layerPath`,
+        //     `layerColor`, etc.) — set inside
+        //     `RhinoMeshConverter.AttachRenderMaterial`
+        // The wrapper itself NEVER carries `renderMaterial`. So when the
+        // .3dm payload decodes successfully (the path that produces
+        // `Extrusion` / `Brep` Rhino objects), v0.1.15's inline-only lookup
+        // missed every material on the model. The v0.1.16 fix borrows the
+        // material from the first display-value mesh, matching the
+        // producer's intent: every face under one wrapper shares one
+        // material in the source Rhino doc, so any displayValue mesh's
+        // renderMaterial is the right one to assign to the round-tripped
+        // native geometry. ResolveMaterialJObject handles the lookup
+        // (inline -> @-prefixed -> displayValue[0]).
         int? matIdx = null;
-        var rmJObj = geoObj["renderMaterial"] as JObject;
-        if (rmJObj is null && geoObj["@renderMaterial"] is JObject atRm)
-            rmJObj = atRm;
+        var (rmJObj, matSource) = ResolveMaterialJObject(geoObj, state.Objects);
         var matOrbitId = rmJObj?["id"]?.Value<string>()
                       ?? rmJObj?["applicationId"]?.Value<string>();
+
+        // Per-object diagnostic so the next debugger doesn't have to fetch
+        // raw wire JSON to figure out where the material came from.
+        var hasDv = (geoObj["displayValue"] ?? geoObj["@displayValue"]) is JArray dvDiag
+            ? dvDiag.Count
+            : (geoObj["displayValue"] ?? geoObj["@displayValue"]) is JObject ? 1 : 0;
+        if (spType.Contains("RhinoObject"))
+        {
+            var hasRaw = (geoObj["rawEncoding"] ?? geoObj["@rawEncoding"]) is JObject;
+            RhinoApp.WriteLine(
+                $"[ORBIT] rhinoobj: id={orbitId} type='{geoObj["type"]?.Value<string>() ?? "?"}' " +
+                $"has-rawEncoding={hasRaw} displayValue-count={hasDv} " +
+                $"material-source={matSource}");
+        }
+        else if (rmJObj is not null)
+        {
+            RhinoApp.WriteLine(
+                $"[ORBIT] material-walk: id={orbitId} type='{spType}' source={matSource}");
+        }
 
         if (rmJObj is not null && state.MaterialConverter is not null)
         {
@@ -785,6 +835,112 @@ public class RhinoReceivePipeline
             state.Warnings.Add(msg);
             RhinoApp.WriteLine($"[ORBIT] bake skip: {msg}");
         }
+    }
+
+    /// <summary>
+    /// Find the best <c>renderMaterial</c> <see cref="JObject"/> for a
+    /// baked leaf. Tries (in order):
+    ///
+    /// <list type="number">
+    ///   <item><description>
+    ///     The leaf's own <c>renderMaterial</c> / <c>@renderMaterial</c>.
+    ///     This is the path Mesh / Brep / Curve / etc. leaves emitted by
+    ///     <c>RhinoMeshConverter.AttachRenderMaterial</c> on the send side
+    ///     follow — material is inline on the leaf.
+    ///   </description></item>
+    ///   <item><description>
+    ///     The first inline <c>displayValue</c> mesh's
+    ///     <c>renderMaterial</c> / <c>@renderMaterial</c>. This is the path
+    ///     <c>RhinoDataObject</c> wrappers
+    ///     (<c>Objects.Data.DataObject:Objects.Data.RhinoObject</c>) follow:
+    ///     the wrapper carries native <c>.3dm</c> bytes plus a list of
+    ///     display-mesh fragments, and each fragment owns the material.
+    ///     The producer (<c>RhinoBrepConverter.BuildWrapper</c>) tessellates
+    ///     a single Rhino object into per-face fragments — they all share
+    ///     the parent object's material — so borrowing the material from
+    ///     <c>displayValue[0]</c> matches the source Rhino doc's per-object
+    ///     material assignment.
+    ///   </description></item>
+    ///   <item><description>
+    ///     First inline <c>displayValue</c> mesh referenced via
+    ///     <c>{referencedId}</c> stub that resolves through
+    ///     <paramref name="objects"/>. v0.1.16's prior call to
+    ///     <see cref="TryResolveDetachedArray"/> in <see cref="BakeLeaf"/>
+    ///     should have inlined these already, but the resolver runs again
+    ///     defensively against any stub that survived.
+    ///   </description></item>
+    /// </list>
+    ///
+    /// <para>
+    /// Returns the material JObject (or null when none found) plus a
+    /// short tag describing where the material was sourced from. The tag
+    /// is logged in the per-leaf diagnostic line so a future bug report
+    /// makes the lookup decision visible without fetching wire JSON.
+    /// </para>
+    /// </summary>
+    private static (JObject? material, string source) ResolveMaterialJObject(
+        JObject geoObj, IReadOnlyDictionary<string, JObject> objects)
+    {
+        // 1. Inline on the leaf itself (Mesh / Brep / Curve / ...).
+        if (geoObj["renderMaterial"] is JObject rmInline)
+            return (rmInline, "inline");
+        if (geoObj["@renderMaterial"] is JObject rmInlineAt)
+            return (rmInlineAt, "inline@");
+
+        // 2. Borrow from displayValue[0].renderMaterial. RhinoObject
+        // wrappers never carry a material on the wrapper itself; the
+        // material lives on each per-face display mesh fragment.
+        var dvToken = geoObj["displayValue"] ?? geoObj["@displayValue"];
+
+        // displayValue is either an array of mesh objects (post-resolve) or
+        // an array of {referencedId} stubs (when TryResolveDetachedArray
+        // hasn't been called yet for this leaf).
+        if (dvToken is JArray dvArr && dvArr.Count > 0)
+        {
+            foreach (var item in dvArr)
+            {
+                var dvMesh = item as JObject;
+                if (dvMesh is null) continue;
+
+                // Inline mesh — read the material directly.
+                if (dvMesh["renderMaterial"] is JObject dvRm)
+                    return (dvRm, "displayValue[0].renderMaterial");
+                if (dvMesh["@renderMaterial"] is JObject dvRmAt)
+                    return (dvRmAt, "displayValue[0].@renderMaterial");
+
+                // Stub — resolve and recheck. This path catches the case
+                // where a producer detached displayValue items individually
+                // (rare; the connector + PRISM both detach the whole array).
+                var refId = dvMesh["referencedId"]?.Value<string>();
+                if (!string.IsNullOrEmpty(refId)
+                    && objects.TryGetValue(refId!, out var resolvedDv))
+                {
+                    if (resolvedDv["renderMaterial"] is JObject resolvedRm)
+                        return (resolvedRm, "displayValue[0].ref.renderMaterial");
+                    if (resolvedDv["@renderMaterial"] is JObject resolvedRmAt)
+                        return (resolvedRmAt, "displayValue[0].ref.@renderMaterial");
+                }
+            }
+        }
+        else if (dvToken is JObject dvSingle)
+        {
+            // Single-object displayValue (rare; some Speckle Python variants).
+            if (dvSingle["renderMaterial"] is JObject dvRm)
+                return (dvRm, "displayValue.renderMaterial");
+            if (dvSingle["@renderMaterial"] is JObject dvRmAt)
+                return (dvRmAt, "displayValue.@renderMaterial");
+            var refId = dvSingle["referencedId"]?.Value<string>();
+            if (!string.IsNullOrEmpty(refId)
+                && objects.TryGetValue(refId!, out var resolvedDv))
+            {
+                if (resolvedDv["renderMaterial"] is JObject resolvedRm)
+                    return (resolvedRm, "displayValue.ref.renderMaterial");
+                if (resolvedDv["@renderMaterial"] is JObject resolvedRmAt)
+                    return (resolvedRmAt, "displayValue.ref.@renderMaterial");
+            }
+        }
+
+        return (null, "none");
     }
 
     private static bool IsCollection(JObject node, string speckleType)
