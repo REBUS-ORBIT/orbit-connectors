@@ -150,7 +150,7 @@ public class RhinoReceivePipeline
             (resolved, total) =>
             {
                 int pct = total > 0
-                    ? Math.Min(70, 10 + resolved * 60 / Math.Max(total, resolved))
+                    ? Math.Min(65, 10 + resolved * 55 / Math.Max(total, resolved))
                     : 10;
                 progress?.Report(($"Downloading... {resolved}/{Math.Max(total, resolved)}", pct));
             });
@@ -161,11 +161,50 @@ public class RhinoReceivePipeline
             throw new InvalidOperationException(
                 $"Root object '{rootObjectId}' did not materialise after tree walk.");
 
+        // 2.5. PRE-FETCH TEXTURE BLOBS (v0.1.15).
+        // OrbitMaterialConverter walks the entire object tree, enumerates
+        // every blob id referenced by any render material's texture field,
+        // and downloads them in parallel into a per-project temp dir. The
+        // synchronous bake phase below then only reads the on-disk cache,
+        // which keeps BakeLeaf sync-friendly (no await inside RhinoDoc
+        // mutations) and avoids the deadlock risk of blocking on HTTP
+        // calls from a UI-context-captured continuation.
+        OrbitMaterialConverter? materialConverter = null;
+        try
+        {
+            materialConverter = new OrbitMaterialConverter(serverUrl, projectId, token);
+            progress?.Report(("Downloading textures...", 68));
+            await materialConverter.PrefetchBlobsAsync(
+                objects,
+                progress: new Progress<(int done, int total)>(p =>
+                {
+                    if (p.total <= 0) return;
+                    var pct = 68 + (int)(p.done * 5.0 / p.total);
+                    progress?.Report(($"Downloading textures... {p.done}/{p.total}", pct));
+                }),
+                ct: ct);
+        }
+        catch (OperationCanceledException)
+        {
+            materialConverter?.Dispose();
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Texture prefetch is best-effort: a failure here must not
+            // block the geometry bake. The diagnostic line lands in the
+            // Rhino command window so the next bug report is actionable.
+            RhinoApp.WriteLine(
+                $"[ORBIT] material: texture prefetch failed (geometry will still bake): {ex.Message}");
+            materialConverter?.Dispose();
+            materialConverter = null;
+        }
+
         // 3. TRAVERSE THE TREE AND BAKE.
         progress?.Report(("Baking geometry...", 75));
 
         var warnings   = new List<string>();
-        var bakeState  = new BakeState(doc, _converter, warnings);
+        var bakeState  = new BakeState(doc, _converter, materialConverter, objects, warnings);
 
         ResetAtPrefixHits();
         doc.BeginUndoRecord("ORBIT Receive");
@@ -182,11 +221,21 @@ public class RhinoReceivePipeline
         doc.Views.Redraw();
 
         LogAtPrefixSummary();
+        if (materialConverter is not null)
+        {
+            RhinoApp.WriteLine(
+                $"[ORBIT] material: summary materials={materialConverter.MaterialsCreated} " +
+                $"blobs={materialConverter.BlobsRequested} " +
+                $"downloaded={materialConverter.BlobsDownloaded} " +
+                $"reused={materialConverter.BlobsFromDisk} " +
+                $"missing={materialConverter.BlobsMissing}");
+        }
         RhinoApp.WriteLine(
             $"[ORBIT] receive: baked {bakeState.ObjectCount} object(s) into " +
             $"{bakeState.LayerCount} layer(s); skipped={bakeState.SkippedCount}; " +
             $"{warnings.Count} warning(s)");
 
+        materialConverter?.Dispose();
         return new ReceiveResult(bakeState.ObjectCount, bakeState.LayerCount, warnings);
     }
 
@@ -288,15 +337,26 @@ public class RhinoReceivePipeline
     {
         public RhinoDoc Doc { get; }
         public OrbitToRhinoConverter Converter { get; }
+        public OrbitMaterialConverter? MaterialConverter { get; }
+        public IReadOnlyDictionary<string, JObject> Objects { get; }
         public List<string> Warnings { get; }
         public int ObjectCount { get; set; }
         public int SkippedCount { get; set; }
         public HashSet<int> LayersTouched { get; } = new();
         public int LayerCount => LayersTouched.Count;
 
-        public BakeState(RhinoDoc doc, OrbitToRhinoConverter converter, List<string> warnings)
+        public BakeState(
+            RhinoDoc doc,
+            OrbitToRhinoConverter converter,
+            OrbitMaterialConverter? materialConverter,
+            IReadOnlyDictionary<string, JObject> objects,
+            List<string> warnings)
         {
-            Doc = doc; Converter = converter; Warnings = warnings;
+            Doc = doc;
+            Converter = converter;
+            MaterialConverter = materialConverter;
+            Objects = objects;
+            Warnings = warnings;
         }
     }
 
@@ -388,7 +448,141 @@ public class RhinoReceivePipeline
         if (TryResolveDetachedArray(resolved, "displayValue", objects, out var dvResolved))
             resolved = dvResolved;
 
+        // v0.1.15: renderMaterial stub inlining + textureCoordinates dechunk
+        // happen inside BakeLeaf so the same prep covers the root-as-leaf
+        // path (TraverseAndBake -> BakeLeaf directly) without duplication.
         BakeLeaf(resolved, leafLayerPath, leafLayerColor, state);
+    }
+
+    /// <summary>
+    /// De-chunk <c>textureCoordinates</c> (or its detached <c>@textureCoordinates</c>
+    /// twin) into a flat <c>[u0, v0, u1, v1, ...]</c> <see cref="JArray"/> the
+    /// mesh converter can consume directly.
+    ///
+    /// <para>
+    /// Three input shapes are supported, in order of frequency on the wire:
+    /// </para>
+    ///
+    /// <list type="bullet">
+    ///   <item><description>
+    ///     A flat array of numbers (3DConvert / PRISM Python writers and
+    ///     the connector's own <c>RhinoMeshConverter</c> on small meshes).
+    ///     Returned untouched.
+    ///   </description></item>
+    ///   <item><description>
+    ///     An array of <c>{referencedId}</c> stubs (every C# SDK send
+    ///     above the <c>[Chunkable]</c> threshold; this is the path the
+    ///     <c>speckle-frontend-2-rebus:v2.4.3</c> viewer fix had to add a
+    ///     <c>dechunk</c> call for). Each chunk's <c>data</c> array is
+    ///     concatenated into the output.
+    ///   </description></item>
+    ///   <item><description>
+    ///     A single <c>{referencedId}</c> stub resolving to a chunk
+    ///     <c>{data:[...]}</c> (rare, but emitted by a couple of
+    ///     visualiser staging payloads).
+    ///   </description></item>
+    /// </list>
+    ///
+    /// <para>
+    /// When the bare property exists we update it in place; when only
+    /// <c>@textureCoordinates</c> exists we move the result onto the
+    /// bare name so the converter (which reads <c>textureCoordinates</c>)
+    /// finds it.
+    /// </para>
+    /// </summary>
+    private bool TryDechunkTextureCoordinates(
+        JObject parent,
+        IReadOnlyDictionary<string, JObject> objects,
+        out JObject result)
+    {
+        result = parent;
+        const string baseName = "textureCoordinates";
+        const string atName   = "@" + baseName;
+        var token = parent[baseName] ?? parent[atName];
+        if (token is null) return false;
+
+        bool usedAt = parent[atName] != null && parent[baseName] == null;
+
+        // Already a flat numeric array — no dechunk work needed, but if
+        // it was under the `@` name we still need to migrate it onto the
+        // bare property for the converter.
+        if (token is JArray arr && (arr.Count == 0 || arr[0].Type != JTokenType.Object))
+        {
+            if (!usedAt) return false;
+            BumpAtPrefixHit(atName);
+            var clone = (JObject)parent.DeepClone();
+            clone.Remove(atName);
+            clone[baseName] = arr;
+            result = clone;
+            return true;
+        }
+
+        // Array of chunk references / chunks.
+        if (token is JArray chunkArr)
+        {
+            var concat = new JArray();
+            int chunksResolved = 0;
+            foreach (var item in chunkArr)
+            {
+                var data = ExtractChunkData(item, objects);
+                if (data is null) continue;
+                chunksResolved++;
+                foreach (var d in data) concat.Add(d);
+            }
+            if (concat.Count == 0) return false;
+
+            if (usedAt) BumpAtPrefixHit(atName);
+            var clone = (JObject)parent.DeepClone();
+            clone.Remove(atName);
+            clone[baseName] = concat;
+            result = clone;
+            RhinoApp.WriteLine(
+                $"[ORBIT] uv: dechunked textureCoordinates chunks={chunksResolved} pairs={concat.Count / 2}");
+            return true;
+        }
+
+        // Single stub or chunk.
+        if (token is JObject single)
+        {
+            var data = ExtractChunkData(single, objects);
+            if (data is null) return false;
+
+            if (usedAt) BumpAtPrefixHit(atName);
+            var clone = (JObject)parent.DeepClone();
+            clone.Remove(atName);
+            clone[baseName] = data;
+            result = clone;
+            RhinoApp.WriteLine(
+                $"[ORBIT] uv: dechunked textureCoordinates single-chunk pairs={data.Count / 2}");
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolve a chunk reference (or inline chunk JObject) to its
+    /// <c>data</c> array. Returns null when the token is neither a
+    /// known chunk nor a stub of one we can resolve.
+    /// </summary>
+    private static JArray? ExtractChunkData(
+        JToken? token, IReadOnlyDictionary<string, JObject> objects)
+    {
+        if (token is null) return null;
+
+        JObject? chunkObj = null;
+        if (token is JObject obj)
+        {
+            var refId = obj["referencedId"]?.Value<string>();
+            if (!string.IsNullOrEmpty(refId)
+                && objects.TryGetValue(refId!, out var resolved))
+                chunkObj = resolved;
+            else if (obj["data"] is JArray)
+                chunkObj = obj;
+        }
+        if (chunkObj is null) return null;
+
+        return chunkObj["data"] as JArray;
     }
 
     /// <summary>
@@ -480,6 +674,15 @@ public class RhinoReceivePipeline
         var spType = geoObj["speckle_type"]?.Value<string>() ?? "unknown";
         var orbitId = geoObj["id"]?.Value<string>() ?? "?";
 
+        // v0.1.15: resolve detached renderMaterial + dechunk textureCoordinates.
+        // Same private helpers used by TraverseAndBakeChild for the rest of
+        // the wire-format normalisation; both are no-ops on already-resolved
+        // payloads, so calling here covers the root-as-leaf path too.
+        if (TryResolveDetachedSingle(geoObj, "renderMaterial", state.Objects, out var rmInlined))
+            geoObj = rmInlined;
+        if (TryDechunkTextureCoordinates(geoObj, state.Objects, out var uvResolved))
+            geoObj = uvResolved;
+
         var geometry = state.Converter.Convert(geoObj);
         if (geometry == null)
         {
@@ -490,6 +693,21 @@ public class RhinoReceivePipeline
             return;
         }
 
+        // UV diagnostic for meshes — confirms textureCoordinates either
+        // arrived inline or made it through the dechunk pass. The
+        // numbers correlate with the [ORBIT] uv: dechunked ... lines
+        // emitted by TryDechunkTextureCoordinates for the same object.
+        if (geometry is global::Rhino.Geometry.Mesh m)
+        {
+            var uvPairs = m.TextureCoordinates.Count;
+            var verts   = m.Vertices.Count;
+            var applied = uvPairs == verts && uvPairs > 0
+                ? "applied=ok"
+                : uvPairs == 0 ? "applied=none" : $"applied=skipped(count {uvPairs}!=verts {verts})";
+            RhinoApp.WriteLine(
+                $"[ORBIT] uv: mesh id={orbitId} vertices={verts} uvPairs={uvPairs} {applied}");
+        }
+
         int layerIdx = EnsureLayer(state.Doc, layerPath ?? "ORBIT Receive", layerColor);
         state.LayersTouched.Add(layerIdx);
 
@@ -497,7 +715,50 @@ public class RhinoReceivePipeline
         {
             LayerIndex = layerIdx,
         };
-        ApplyMaterialColor(geoObj, attrs);
+
+        // v0.1.15: assign per-object Rhino material when the leaf carries
+        // a renderMaterial. The OrbitMaterialConverter caches by ORBIT
+        // material id so reused materials hit a single doc.Materials
+        // entry. ApplyMaterialColor still runs as a fall-back: it
+        // populates the per-object ObjectColor from renderMaterial.diffuse
+        // for materials we couldn't build into a real Rhino material
+        // (e.g. when MaterialConverter is null after a prefetch failure).
+        int? matIdx = null;
+        var rmJObj = geoObj["renderMaterial"] as JObject;
+        if (rmJObj is null && geoObj["@renderMaterial"] is JObject atRm)
+            rmJObj = atRm;
+        var matOrbitId = rmJObj?["id"]?.Value<string>()
+                      ?? rmJObj?["applicationId"]?.Value<string>();
+
+        if (rmJObj is not null && state.MaterialConverter is not null)
+        {
+            try
+            {
+                matIdx = state.MaterialConverter.GetOrCreateMaterialIndex(
+                    rmJObj, state.Objects, state.Doc);
+            }
+            catch (Exception ex)
+            {
+                RhinoApp.WriteLine(
+                    $"[ORBIT] material: id={matOrbitId ?? "?"} build failed: {ex.Message}");
+                matIdx = null;
+            }
+        }
+
+        if (matIdx.HasValue)
+        {
+            attrs.MaterialIndex  = matIdx.Value;
+            attrs.MaterialSource = ObjectMaterialSource.MaterialFromObject;
+            if (!string.IsNullOrEmpty(matOrbitId))
+            {
+                try { attrs.SetUserString("ORBIT_renderMaterialId", matOrbitId); }
+                catch { /* attribute store is best-effort */ }
+            }
+        }
+        else
+        {
+            ApplyMaterialColor(geoObj, attrs);
+        }
 
         // Stamp the ORBIT object id into the user dictionary so a future
         // delete-and-replace receive can find the previously-baked object.
@@ -513,7 +774,9 @@ public class RhinoReceivePipeline
             state.ObjectCount++;
             var layerFullPath = state.Doc.Layers[layerIdx].FullPath;
             RhinoApp.WriteLine(
-                $"[ORBIT] bake: type='{spType}' id={orbitId} -> layer '{layerFullPath}' geom={geometry.GetType().Name}");
+                $"[ORBIT] bake: type='{spType}' id={orbitId} -> layer '{layerFullPath}' " +
+                $"geom={geometry.GetType().Name}" +
+                (matIdx.HasValue ? $" matIdx={matIdx.Value}" : ""));
         }
         else
         {
