@@ -238,7 +238,8 @@ public class OrbitToRhinoConverter
 
     /// <summary>
     /// Returns true if the object carries a base64-encoded native .3dm
-    /// payload anywhere we know to look (encoded / encodedValue / rawEncoding).
+    /// payload anywhere we know to look (encoded / encodedValue /
+    /// rawEncoding / @rawEncoding).
     /// Used by <see cref="Convert"/> to short-circuit the type dispatch when
     /// a perfect round-trip is available regardless of declared type.
     /// </summary>
@@ -246,7 +247,12 @@ public class OrbitToRhinoConverter
     {
         if (obj["encoded"]?.Type == JTokenType.String) return true;
         if (obj["encodedValue"]?.Type == JTokenType.String) return true;
-        if (obj["rawEncoding"] is JObject re && re["contents"]?.Type == JTokenType.String) return true;
+        // v0.1.14: probe both `rawEncoding` (connector shape) and
+        // `@rawEncoding` (PRISM / monorepo-SDK shape, Speckle's
+        // [DetachProperty] convention preserves the `@` prefix on the
+        // wire and the ORBIT server stores it as-is).
+        var raw = obj["rawEncoding"] ?? obj["@rawEncoding"];
+        if (raw is JObject re && re["contents"]?.Type == JTokenType.String) return true;
         return false;
     }
 
@@ -264,7 +270,12 @@ public class OrbitToRhinoConverter
         native = DecodeNative(encodedValue);
         if (native != null) return native;
 
-        if (obj["rawEncoding"] is JObject rawEncoding)
+        // v0.1.14: accept either `rawEncoding` or `@rawEncoding`. PRISM's
+        // upstream resolver in RhinoReceivePipeline already normalises
+        // `@rawEncoding` -> `rawEncoding` before this converter runs, but
+        // nested converters (PolyCurve.segments etc.) can re-enter Convert
+        // with un-normalised payloads, so we defensively accept both here.
+        if ((obj["rawEncoding"] ?? obj["@rawEncoding"]) is JObject rawEncoding)
         {
             var contents = rawEncoding["contents"]?.Value<string>();
             native = DecodeNative(contents);
@@ -487,10 +498,21 @@ public class OrbitToRhinoConverter
     /// Yield every JObject under <c>displayValue</c>, regardless of whether
     /// the sender emitted it as an array (Speckle Rhino connector, PRISM,
     /// 3DConvert) or a single object (some Speckle Python / JS variants).
+    ///
+    /// <para>
+    /// v0.1.14: also probes <c>@displayValue</c>. PRISM / the monorepo SDK
+    /// marks <c>displayValue</c> as <c>[DetachProperty]</c> on
+    /// <c>RhinoDataObject</c>, and Speckle's serialiser preserves the <c>@</c>
+    /// prefix on the wire — the ORBIT server stores it as-is. The receive
+    /// pipeline normalises this back to <c>displayValue</c> before invoking
+    /// the converter, but nested converters (PolyCurve segments, Brep
+    /// fallback recursion) re-enter <see cref="Convert"/> with un-normalised
+    /// payloads, so we accept both names defensively here.
+    /// </para>
     /// </summary>
     private static IEnumerable<JObject> EnumerateDisplayValueItems(JObject obj)
     {
-        var dv = obj["displayValue"];
+        var dv = obj["displayValue"] ?? obj["@displayValue"];
         if (dv == null) yield break;
         switch (dv)
         {

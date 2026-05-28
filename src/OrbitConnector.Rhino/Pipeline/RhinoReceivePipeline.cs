@@ -76,6 +76,22 @@ public class RhinoReceivePipeline
     /// <summary>
     /// JSON property names a sender might use to attach the geometry
     /// children of a collection node. We walk all of these (in this order).
+    ///
+    /// <para>
+    /// <b>v0.1.14 change:</b> for every name in this list we ALSO check
+    /// the <c>@</c>-prefixed variant (e.g. <c>@elements</c>) when the
+    /// bare name is absent. <c>@</c> is Speckle's detach-marker prefix
+    /// (<c>[Chunkable]</c> / <c>[DetachProperty]</c> on the C# side):
+    /// when an SDK marks <c>elements</c> as detached the field lands on
+    /// the wire as <c>@elements</c>, and the ORBIT server stores it
+    /// AS-IS (it does NOT strip the prefix when persisting). The
+    /// connector's own send pipeline uses bare names today, but the
+    /// PRISM / monorepo SDK uses <c>@elements</c> / <c>@displayValue</c>
+    /// / <c>@rawEncoding</c> / <c>@objects</c> / <c>@definitionProxies</c>
+    /// etc. — see <c>Orbit.Objects.Base.OrbitObject</c> in the monorepo.
+    /// v0.1.13 only checked the bare names and therefore silently dropped
+    /// every PRISM-uploaded collection ("0 children" in the receive log).
+    /// </para>
     /// </summary>
     private static readonly string[] CollectionChildProperties =
     {
@@ -151,6 +167,7 @@ public class RhinoReceivePipeline
         var warnings   = new List<string>();
         var bakeState  = new BakeState(doc, _converter, warnings);
 
+        ResetAtPrefixHits();
         doc.BeginUndoRecord("ORBIT Receive");
         try
         {
@@ -164,6 +181,7 @@ public class RhinoReceivePipeline
         progress?.Report(($"Received {bakeState.ObjectCount} object(s)", 95));
         doc.Views.Redraw();
 
+        LogAtPrefixSummary();
         RhinoApp.WriteLine(
             $"[ORBIT] receive: baked {bakeState.ObjectCount} object(s) into " +
             $"{bakeState.LayerCount} layer(s); skipped={bakeState.SkippedCount}; " +
@@ -358,42 +376,103 @@ public class RhinoReceivePipeline
         // converter expects inline. Resolve it from our object cache so
         // OrbitToRhinoConverter can read its `contents`. Same for
         // displayValue when a sender uses detached display meshes.
-        if (resolved["rawEncoding"] is JObject rawRef
-            && rawRef["referencedId"]?.Value<string>() is string rawId
-            && !string.IsNullOrEmpty(rawId)
-            && objects.TryGetValue(rawId, out var rawObj))
-        {
-            resolved = (JObject)resolved.DeepClone();
-            resolved["rawEncoding"] = rawObj;
-        }
+        //
+        // v0.1.14: the monorepo SDK (PRISM uploads) uses `@rawEncoding`
+        // and `@displayValue` — Speckle's `[DetachProperty]` convention
+        // preserves the `@` prefix on the wire. Probe both names and, on
+        // hit, normalise back to the un-prefixed name the converter
+        // expects (OrbitToRhinoConverter reads `rawEncoding` / `displayValue`).
+        if (TryResolveDetachedSingle(resolved, "rawEncoding", objects, out var rawResolved))
+            resolved = rawResolved;
 
-        if (resolved["displayValue"] is JArray dvArr)
-        {
-            var inlinedDv = new JArray();
-            bool anyResolved = false;
-            foreach (var item in dvArr)
-            {
-                if (item is JObject dvObj
-                    && dvObj["referencedId"]?.Value<string>() is string dvRefId
-                    && !string.IsNullOrEmpty(dvRefId)
-                    && objects.TryGetValue(dvRefId, out var resolvedDv))
-                {
-                    inlinedDv.Add(resolvedDv);
-                    anyResolved = true;
-                }
-                else
-                {
-                    inlinedDv.Add(item);
-                }
-            }
-            if (anyResolved)
-            {
-                resolved = (JObject)resolved.DeepClone();
-                resolved["displayValue"] = inlinedDv;
-            }
-        }
+        if (TryResolveDetachedArray(resolved, "displayValue", objects, out var dvResolved))
+            resolved = dvResolved;
 
         BakeLeaf(resolved, leafLayerPath, leafLayerColor, state);
+    }
+
+    /// <summary>
+    /// Detached-single helper. Looks for <paramref name="baseName"/> or its
+    /// <c>@</c>-prefixed variant on <paramref name="parent"/>. When the value
+    /// is a <c>{referencedId}</c> stub, swaps in the resolved object from
+    /// <paramref name="objects"/> under the un-prefixed name so downstream
+    /// code (and the converter) sees a uniform shape. Returns true when
+    /// <paramref name="result"/> is a fresh clone with the substitution
+    /// applied; false when no work was needed.
+    /// </summary>
+    private bool TryResolveDetachedSingle(
+        JObject parent,
+        string baseName,
+        IReadOnlyDictionary<string, JObject> objects,
+        out JObject result)
+    {
+        result = parent;
+        var atName = "@" + baseName;
+        // Prefer bare name (connector shape); fall back to @-prefix (PRISM).
+        JObject? stub = parent[baseName] as JObject ?? parent[atName] as JObject;
+        if (stub == null) return false;
+        var refId = stub["referencedId"]?.Value<string>();
+        if (string.IsNullOrEmpty(refId)) return false;
+        if (!objects.TryGetValue(refId, out var inlined)) return false;
+
+        bool usedAt = parent[atName] != null && parent[baseName] == null;
+        if (usedAt) BumpAtPrefixHit(atName);
+
+        var clone = (JObject)parent.DeepClone();
+        clone.Remove(atName);
+        clone[baseName] = inlined;
+        result = clone;
+        return true;
+    }
+
+    /// <summary>
+    /// Detached-array helper. Same contract as
+    /// <see cref="TryResolveDetachedSingle"/> but for array-valued
+    /// detached properties like <c>displayValue</c> / <c>@displayValue</c>.
+    /// Resolves every <c>{referencedId}</c> stub it can, preserves any
+    /// inline items unchanged, and emits the resolved array under the
+    /// un-prefixed name.
+    /// </summary>
+    private bool TryResolveDetachedArray(
+        JObject parent,
+        string baseName,
+        IReadOnlyDictionary<string, JObject> objects,
+        out JObject result)
+    {
+        result = parent;
+        var atName = "@" + baseName;
+        JArray? arr = parent[baseName] as JArray ?? parent[atName] as JArray;
+        if (arr == null) return false;
+
+        bool usedAt = parent[atName] != null && parent[baseName] == null;
+
+        var inlinedDv = new JArray();
+        bool anyResolved = false;
+        foreach (var item in arr)
+        {
+            if (item is JObject dvObj
+                && dvObj["referencedId"]?.Value<string>() is string dvRefId
+                && !string.IsNullOrEmpty(dvRefId)
+                && objects.TryGetValue(dvRefId, out var resolvedDv))
+            {
+                inlinedDv.Add(resolvedDv);
+                anyResolved = true;
+            }
+            else
+            {
+                inlinedDv.Add(item);
+            }
+        }
+        // Only mutate when we either resolved at least one stub or had to
+        // migrate the field from `@baseName` -> `baseName`.
+        if (!anyResolved && !usedAt) return false;
+        if (usedAt) BumpAtPrefixHit(atName);
+
+        var clone = (JObject)parent.DeepClone();
+        clone.Remove(atName);
+        clone[baseName] = inlinedDv;
+        result = clone;
+        return true;
     }
 
     private void BakeLeaf(JObject geoObj, string? layerPath, long? layerColor, BakeState state)
@@ -455,9 +534,17 @@ public class RhinoReceivePipeline
         // Avoids dropping legacy payloads that pre-date collectionType, and
         // avoids treating senders that put collection children under
         // `data` / `objects` as leaves.
+        //
+        // v0.1.14: also check `@`-prefixed variants — PRISM-uploaded payloads
+        // emit `@elements`, `@displayValue`, `@objects`, etc., because the
+        // monorepo SDK marks those properties as detached (Speckle's
+        // `[DetachProperty]` convention preserves the `@` prefix on the wire
+        // and the ORBIT server stores it as-is). See the comment on
+        // CollectionChildProperties above.
         foreach (var prop in CollectionChildProperties)
         {
-            if (node[prop] is JArray arr && arr.Count > 0)
+            var arr = (node[prop] ?? node["@" + prop]) as JArray;
+            if (arr is { Count: > 0 })
             {
                 // Geometry leaves with displayValue meshes also have a
                 // non-empty `displayValue` array but ARE leaves; we want
@@ -479,22 +566,57 @@ public class RhinoReceivePipeline
             || speckleType.Contains("RhinoObject");
     }
 
-    private static IEnumerable<JToken> EnumerateCollectionChildren(JObject collection)
+    private IEnumerable<JToken> EnumerateCollectionChildren(JObject collection)
     {
         foreach (var prop in CollectionChildProperties)
         {
-            // Skip displayValue when this collection node is also tagged as
-            // a known geometry leaf (defence-in-depth alongside IsCollection
-            // above; in practice IsCollection already short-circuits this).
-            if (collection[prop] is JArray arr)
+            // v0.1.14: prefer the bare name (connector-native shape) but
+            // fall back to the `@`-prefixed variant (PRISM / monorepo SDK
+            // shape). See CollectionChildProperties comment for why both
+            // shapes co-exist on the same server.
+            var bare = collection[prop];
+            var atToken = bare == null ? collection["@" + prop] : null;
+            var token = bare ?? atToken;
+            if (token is JArray arr)
             {
+                if (atToken != null) BumpAtPrefixHit("@" + prop);
                 foreach (var c in arr) yield return c;
             }
-            else if (collection[prop] is JObject one)
+            else if (token is JObject one)
             {
+                if (atToken != null) BumpAtPrefixHit("@" + prop);
                 yield return one;
             }
         }
+    }
+
+    // -- @-prefix diagnostic counter ----------------------------------------
+    //
+    // Bumped once per detected `@`-prefixed property name during a receive so
+    // the user / operator can confirm at a glance that the v0.1.14 fix is
+    // doing the work (otherwise a successful PRISM receive looks identical to
+    // a successful connector receive). Reset at the start of every receive.
+
+    private readonly Dictionary<string, int> _atPrefixHits = new(StringComparer.Ordinal);
+
+    private void BumpAtPrefixHit(string name)
+    {
+        _atPrefixHits.TryGetValue(name, out var n);
+        _atPrefixHits[name] = n + 1;
+    }
+
+    private void ResetAtPrefixHits() => _atPrefixHits.Clear();
+
+    private void LogAtPrefixSummary()
+    {
+        if (_atPrefixHits.Count == 0) return;
+        var summary = string.Join(", ", _atPrefixHits
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => $"{kv.Key}={kv.Value}"));
+        RhinoApp.WriteLine(
+            "[ORBIT] traverse: resolved {0} `@`-prefixed detached propert{1} ({2}) — payload " +
+            "uses Speckle detach convention (PRISM / monorepo SDK shape).",
+            _atPrefixHits.Count, _atPrefixHits.Count == 1 ? "y" : "ies", summary);
     }
 
     /// <summary>

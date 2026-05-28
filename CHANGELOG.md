@@ -11,6 +11,113 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.14 — Fix receive of PRISM / monorepo-SDK uploads ("0 children")
+
+**Symptom.** After installing `v0.1.13`, opening **Receive from ORBIT**
+on a model uploaded by PRISM (3DM, FBX, OBJ, GLB, ZIP-bundle, etc.)
+silently bakes nothing. The diagnostic log shows the API call
+succeeded — every referenced object was downloaded from the server
+(e.g. `[ORBIT] receive: fetched 42 object(s) from server`) — and the
+root object is the expected `Speckle.Core.Models.Collections.Collection`
+with the model name on it, but the next log line is
+`[ORBIT] traverse: collection type='Speckle.Core.Models.Collections.Collection' name='<model>' has 0 children`
+and the receive completes with `baked 0 object(s) into 0 layer(s)`.
+
+A model uploaded via the connector's own **Send to ORBIT** flow against
+the same project receives correctly. Both upload paths produce the same
+`speckle_type`, both pass through the same ORBIT server, and both store
+under the same project — but the resulting wire JSON differs on a single
+character that v0.1.13's receive pipeline does not handle.
+
+### Root cause
+
+The Speckle/ORBIT wire format detaches collection children: each item
+inside `elements` is stored as its own object and replaced inline with a
+`{"referencedId":"…","speckle_type":"reference"}` stub. The serialiser
+indicates "this property is detached" by prefixing the JSON property
+name with `@`. The two ORBIT SDKs in production today disagree on
+whether to apply the prefix:
+
+| Sender                                | JSON property name              |
+|---------------------------------------|---------------------------------|
+| Rhino connector (vendored SDK)        | `elements`                      |
+| PRISM agent + monorepo SDK            | `@elements`                     |
+| PRISM agent + monorepo SDK (RhinoDataObject) | `@rawEncoding`, `@displayValue` |
+| PRISM agent + monorepo SDK (DefinitionProxy) | `@objects`                      |
+
+The ORBIT server stores whatever the sender posted **as-is** — it does
+NOT strip the `@` prefix during persistence — so a receive that looks
+only at the bare name silently drops every PRISM-uploaded payload.
+
+`RhinoReceivePipeline.IsCollection` / `EnumerateCollectionChildren` /
+`TraverseAndBakeChild` (v0.1.13) all looked for `elements` / `displayValue`
+/ `data` / `children` / `objects` / `rawEncoding` only. `OrbitToRhinoConverter`
+similarly looked only at `displayValue` and `rawEncoding` on every
+sub-object it walked. PRISM-uploaded payloads matched none of these,
+so the BFS produced an empty child enumeration and the bake count was
+zero.
+
+This was verified by fetching the raw wire JSON from
+`GET /objects/{streamId}/{objectId}/single` against the actual failing
+model. The connector-uploaded root shows `"elements":[…]`; the
+PRISM-uploaded root shows `"@elements":[…]` — confirmed identical
+otherwise.
+
+### Fix
+
+For every detachable property the receive pipeline looks at, also try
+the `@`-prefixed variant. Normalise back to the bare name once the
+stub is resolved so the converter sees a single uniform shape.
+
+- `Pipeline/RhinoReceivePipeline.cs`
+  - `IsCollection` and `EnumerateCollectionChildren` now probe both
+    `elements`/`@elements`, `displayValue`/`@displayValue`,
+    `data`/`@data`, `children`/`@children`, `objects`/`@objects`.
+  - `TraverseAndBakeChild` resolves `rawEncoding` / `@rawEncoding` and
+    `displayValue` / `@displayValue` via two new helpers
+    (`TryResolveDetachedSingle`, `TryResolveDetachedArray`) that always
+    emit the inlined value under the bare property name.
+  - Adds an `@`-prefix hit counter. At the end of every receive that
+    crossed at least one detached field, the pipeline writes a single
+    diagnostic summary line of the form
+    `[ORBIT] traverse: resolved 2 \`@\`-prefixed detached properties (@elements=5, @displayValue=13) — payload uses Speckle detach convention (PRISM / monorepo SDK shape).`
+    so the next failure is debuggable without re-reproducing.
+
+- `Converters/FromOrbit/OrbitToRhinoConverter.cs`
+  - `HasNativePayload` and `TryDecodeNativeAny` accept either
+    `rawEncoding` or `@rawEncoding` on the leaf JSON.
+  - `EnumerateDisplayValueItems` accepts either `displayValue` or
+    `@displayValue`. Defensive — the upstream pipeline normalises
+    these before calling the converter, but nested converters
+    (`ConvertPolyCurve` segments, Brep display-mesh fallback recursion)
+    re-enter `Convert` with un-normalised payloads.
+
+### Validation
+
+Built against the three roots from the bug report
+(`https://orbit.rebus.industries/projects/932088aa79/models/...`):
+
+- `prism 3dm` (PRISM 3DM upload, 42 objects, 6 layer collections):
+  v0.1.13 baked 0, v0.1.14 walks the `@elements` chain end-to-end.
+- `fbx test` (PRISM FBX upload, 3 objects, 1 layer): same — v0.1.13
+  reported 0 children, v0.1.14 finds and bakes the single nested
+  layer's mesh.
+- `rhino connector` (Rhino connector upload, 45 objects, 6 layers):
+  unchanged — already received correctly under v0.1.13 because the
+  connector-vendored SDK writes the bare `elements` name; v0.1.14
+  takes the same code path with no diff in behaviour.
+
+### Out of scope
+
+The two SDKs are intentionally left out of lockstep here. Aligning
+them (either by stripping `@` on the server during persistence, or by
+switching the connector's vendored SDK to also use `@elements`) is a
+breaking-on-the-wire change that would have to be coordinated with
+every existing project's stored objects — beyond the scope of a
+receive-side hotfix. The receive pipeline now tolerates both shapes
+indefinitely, and the per-receive `@`-prefix summary line gives the
+operator a one-glance view of which shape any given model uses.
+
 ## v0.1.13 — Fix panel UI mojibake + receive baking edge cases
 
 Two follow-on bugs reported on top of the `v0.1.12` release shipped to PC01
