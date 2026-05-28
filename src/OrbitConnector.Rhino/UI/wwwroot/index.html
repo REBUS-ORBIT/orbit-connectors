@@ -27,18 +27,30 @@
   html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;overflow-x:hidden}
   body{display:flex;flex-direction:column;height:100%}
 
-  /* ── Scrollbar ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Scrollbar Ã¢â€â‚¬Ã¢â€â‚¬ */
   ::-webkit-scrollbar{width:4px}
   ::-webkit-scrollbar-track{background:var(--bg)}
   ::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:2px}
 
-  /* ── Header ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Header Ã¢â€â‚¬Ã¢â€â‚¬ */
   #header{
     display:flex;align-items:center;justify-content:space-between;
     padding:12px 14px 10px;
     border-bottom:1px solid var(--border);
     flex-shrink:0;
   }
+  /*
+   * v0.1.12: the panel header carries the actual ORBIT logo as a small
+   * graphic on the left and keeps the version label + Check-for-updates
+   * link on the right. The logo PNG is inlined as base64 below; this
+   * avoids any embedded-resource resolution path inside the WebView
+   * (which previously left the header text-only because the WebView
+   * couldn't reach assembly-embedded resources without a custom
+   * URI scheme).
+   */
+  #header-left{display:flex;align-items:center;gap:8px;min-width:0}
+  #header-logo{height:28px;width:auto;flex-shrink:0;display:block}
+  #header-text{display:flex;flex-direction:column;min-width:0}
   #wordmark{font-size:14px;font-weight:700;color:var(--accent);letter-spacing:.05em}
   #header-sub{font-size:10px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase;margin-top:1px}
   #header-right{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
@@ -51,7 +63,7 @@
   #btn-check-updates:hover{text-decoration:underline}
   #btn-check-updates:disabled{opacity:.5;cursor:default;text-decoration:none}
 
-  /* ── Buttons ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Buttons Ã¢â€â‚¬Ã¢â€â‚¬ */
   .btn{
     display:inline-flex;align-items:center;justify-content:center;gap:5px;
     border:none;border-radius:6px;cursor:pointer;font-family:var(--font);
@@ -71,11 +83,11 @@
   .btn-icon:hover{background:var(--bg3);color:var(--text2)}
   .btn-sm{height:26px;padding:0 10px;font-size:11px;border-radius:5px}
 
-  /* ── Pages ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Pages Ã¢â€â‚¬Ã¢â€â‚¬ */
   .page{display:none;flex-direction:column;flex:1;overflow:hidden}
   .page.active{display:flex}
 
-  /* ── Login page ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Login page Ã¢â€â‚¬Ã¢â€â‚¬ */
   #page-login{padding:20px 16px;gap:14px;overflow-y:auto}
   .field-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
   .input{
@@ -94,7 +106,7 @@
   .divider{display:flex;align-items:center;gap:10px;color:var(--text3);font-size:11px}
   .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
 
-  /* ── Main page ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Main page Ã¢â€â‚¬Ã¢â€â‚¬ */
   #page-main{overflow:hidden}
   #account-bar{
     display:flex;align-items:center;justify-content:space-between;
@@ -110,7 +122,7 @@
   #empty-state{padding:28px 16px;text-align:center;color:var(--text3)}
   #empty-state p{line-height:1.5}
 
-  /* ── Card ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Card Ã¢â€â‚¬Ã¢â€â‚¬ */
   .card{border-bottom:1px solid var(--border)}
   .card-header{
     display:flex;align-items:center;gap:0;
@@ -132,7 +144,7 @@
   .card-chevron{font-size:10px;color:var(--text3);transition:transform .15s;flex-shrink:0;width:12px;text-align:center}
   .card.expanded .card-chevron{transform:rotate(180deg)}
 
-  /* ── Card body ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Card body Ã¢â€â‚¬Ã¢â€â‚¬ */
   .card-body{display:none;border-top:1px solid var(--border)}
   .card.expanded .card-body{display:block}
   .cb-section{border-bottom:1px solid var(--border)}
@@ -155,7 +167,7 @@
   .inline-new{display:flex;gap:6px;margin-top:6px}
   .inline-new .input{flex:1}
 
-  /* ── Layer list ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Layer list Ã¢â€â‚¬Ã¢â€â‚¬ */
   .layer-list{
     max-height:160px;overflow-y:auto;background:var(--bg3);
     border:1px solid var(--border);border-radius:6px;
@@ -172,7 +184,7 @@
   .layer-mode-row label{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer}
   .layer-mode-row input[type=radio]{accent-color:var(--accent);cursor:pointer}
 
-  /* ── Card footer ── */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Card footer Ã¢â€â‚¬Ã¢â€â‚¬ */
   .cb-footer{padding:12px 14px;border-top:1px solid var(--border)}
   .cb-status{padding:6px 14px 0;font-size:11px;display:none}
   .cb-status.show{display:block}
@@ -190,12 +202,23 @@
 
 <!-- Header -->
 <div id="header">
-  <div>
-    <div id="wordmark">ORBIT</div>
-    <div id="header-sub">Connector</div>
+  <div id="header-left">
+    <!--
+      ORBIT logo, inlined as base64 to avoid the embedded-resource
+      resolution path inside Rhino's Eto WebView. The PNG is a 96Ãƒâ€”95
+      resize of src/OrbitConnector.Rhino/Resources/orbit-logo.png
+      (8.9 KB Ã¢â€ â€™ 12.0 KB base64). Bump together with the assembly logo
+      when the brand image changes.
+    -->
+    <img id="header-logo" alt="ORBIT"
+         src="data:image/png;base64,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"/>
+    <div id="header-text">
+      <div id="wordmark">ORBIT</div>
+      <div id="header-sub">Connector</div>
+    </div>
   </div>
   <div id="header-right">
-    <span id="version-label">v—</span>
+    <span id="version-label">vÃ¢â‚¬â€</span>
     <button id="btn-check-updates" type="button" title="Check GitHub for a newer connector release">Check for updates</button>
   </div>
 </div>
@@ -213,11 +236,11 @@
 
   <div class="login-section">
     <div class="field-label">Personal Access Token</div>
-    <input id="pat-input" class="input" type="password" placeholder="Paste token…" spellcheck="false"/>
+    <input id="pat-input" class="input" type="password" placeholder="Paste tokenÃ¢â‚¬Â¦" spellcheck="false"/>
     <button class="btn btn-ghost btn-sm" id="btn-pat" style="align-self:flex-start">Use Token</button>
   </div>
 
-  <div id="login-spinner"><div class="spinner"></div><span id="login-spinner-text">Connecting…</span></div>
+  <div id="login-spinner"><div class="spinner"></div><span id="login-spinner-text">ConnectingÃ¢â‚¬Â¦</span></div>
   <div id="login-error"></div>
 </div>
 
@@ -225,8 +248,8 @@
 <div id="page-main" class="page">
   <div id="account-bar">
     <div>
-      <div id="account-name">—</div>
-      <div id="account-server">—</div>
+      <div id="account-name">Ã¢â‚¬â€</div>
+      <div id="account-server">Ã¢â‚¬â€</div>
     </div>
     <button class="btn btn-ghost btn-sm" id="btn-logout">Sign out</button>
   </div>
@@ -242,7 +265,7 @@
 </div>
 
 <script>
-// ── State ────────────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ State Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 const state = {
   user: null,
   serverUrl: '',
@@ -251,7 +274,7 @@ const state = {
   models: {},      // {cardId: [{id,name}]}
   layers: [],      // [{fullPath,name,depth}] - from active Rhino doc
   // Per-card transient UI state. Never cleared by onCards() so it
-  // survives every full renderCards() DOM rebuild — that's what keeps
+  // survives every full renderCards() DOM rebuild Ã¢â‚¬â€ that's what keeps
   // the project/model dropdowns populated, the upload progress visible,
   // and the expanded/collapsed state correct when the user switches
   // panel tabs in Rhino and comes back.
@@ -262,13 +285,13 @@ function getCardUi(cardId) {
   return state.uiState[cardId];
 }
 
-// ── Bridge to C# ─────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Bridge to C# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function sendToHost(action, data) {
   const params = encodeURIComponent(JSON.stringify(data || {}));
   try { window.location.href = `orbit://msg/${action}?d=${params}`; } catch(e) {}
 }
 
-// ── Called BY C# ─────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Called BY C# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 window.orbitReceive = function(msg) {
   const m = JSON.parse(msg);
   switch (m.type) {
@@ -291,7 +314,7 @@ window.orbitReceive = function(msg) {
   }
 };
 
-// ── Version + update check (v0.1.2 / restored in v0.1.8 / v0.1.11) ───────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Version + update check (v0.1.2 / restored in v0.1.8 / v0.1.11) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function onVersion(version) {
   const lbl = document.getElementById('version-label');
   if (lbl) lbl.textContent = 'v' + (version || 'dev');
@@ -301,7 +324,7 @@ document.getElementById('btn-check-updates').onclick = () => {
   const btn = document.getElementById('btn-check-updates');
   if (!btn || btn.disabled) return;
   btn.disabled = true;
-  btn.textContent = 'Checking…';
+  btn.textContent = 'CheckingÃ¢â‚¬Â¦';
   sendToHost('checkUpdates', {});
 };
 
@@ -323,11 +346,11 @@ function onUpdateCheck(m) {
   }
 }
 
-// ── Login ─────────────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Login Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 document.getElementById('btn-oauth').onclick = () => {
   const url = document.getElementById('server-url').value.trim();
   if (!url) return;
-  setLoginBusy('Opening browser…');
+  setLoginBusy('Opening browserÃ¢â‚¬Â¦');
   sendToHost('login', { url, method: 'oauth' });
 };
 
@@ -335,7 +358,7 @@ document.getElementById('btn-pat').onclick = () => {
   const url = document.getElementById('server-url').value.trim();
   const pat = document.getElementById('pat-input').value.trim();
   if (!url || !pat) return;
-  setLoginBusy('Validating token…');
+  setLoginBusy('Validating tokenÃ¢â‚¬Â¦');
   sendToHost('login', { url, method: 'pat', token: pat });
 };
 
@@ -380,7 +403,7 @@ function onLogout() {
   showPage('login');
 }
 
-// ── Cards ─────────────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Cards Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function onCards(items) {
   // Normalise type to lowercase so all comparisons are consistent
   state.cards = (items || []).map(c => ({ ...c, type: String(c.type).toLowerCase() }));
@@ -422,8 +445,8 @@ function buildCard(card) {
       <button class="btn ${isSend ? 'btn-primary' : 'btn-recv'} btn-sm"
         onclick="event.stopPropagation();doAction('${card.id}')"
       >${isSend ? 'Send' : 'Receive'}</button>
-      <button class="btn btn-icon" onclick="event.stopPropagation();removeCard('${card.id}')" title="Remove">×</button>
-      <span class="card-chevron">▼</span>
+      <button class="btn btn-icon" onclick="event.stopPropagation();removeCard('${card.id}')" title="Remove">Ãƒâ€”</button>
+      <span class="card-chevron">Ã¢â€“Â¼</span>
     </div>
   </div>
   <div class="card-body">
@@ -442,18 +465,18 @@ function buildCardBody(card) {
     <div class="cb-section-header">
       <span class="cb-section-label">Project</span>
       <div class="cb-section-actions">
-        <button class="btn btn-icon" onclick="refreshProjects('${card.id}')" title="Refresh">↻</button>
+        <button class="btn btn-icon" onclick="refreshProjects('${card.id}')" title="Refresh">Ã¢â€ Â»</button>
         <button class="btn btn-icon" onclick="toggleNewProj('${card.id}')" title="New project">+</button>
       </div>
     </div>
     <div class="cb-content">
       <select class="select" id="proj-${card.id}" onchange="onProjChange('${card.id}')">
-        <option value="">Loading…</option>
+        <option value="">LoadingÃ¢â‚¬Â¦</option>
       </select>
       <div id="new-proj-${card.id}" class="inline-new" style="display:none">
         <input class="input" id="new-proj-name-${card.id}" placeholder="Project name" style="font-size:12px"/>
         <button class="btn btn-primary btn-sm" onclick="createProject('${card.id}')">Create</button>
-        <button class="btn btn-icon" onclick="toggleNewProj('${card.id}')">×</button>
+        <button class="btn btn-icon" onclick="toggleNewProj('${card.id}')">Ãƒâ€”</button>
       </div>
     </div>
   </div>
@@ -462,7 +485,7 @@ function buildCardBody(card) {
     <div class="cb-section-header">
       <span class="cb-section-label">Model</span>
       <div class="cb-section-actions">
-        <button class="btn btn-icon" onclick="refreshModels('${card.id}')" title="Refresh">↻</button>
+        <button class="btn btn-icon" onclick="refreshModels('${card.id}')" title="Refresh">Ã¢â€ Â»</button>
         <button class="btn btn-icon" onclick="toggleNewModel('${card.id}')" title="New model">+</button>
       </div>
     </div>
@@ -472,7 +495,7 @@ function buildCardBody(card) {
       </select>
       <div id="new-mdl-${card.id}" class="inline-new" style="display:none">
         <input class="input" id="new-mdl-name-${card.id}" placeholder="Model name" style="font-size:12px"/>
-        <button class="btn btn-icon" onclick="toggleNewModel('${card.id}')">×</button>
+        <button class="btn btn-icon" onclick="toggleNewModel('${card.id}')">Ãƒâ€”</button>
       </div>
     </div>
   </div>
@@ -487,7 +510,7 @@ function buildCardBody(card) {
   <div class="progress-bar" id="prog-bar-${card.id}"><div class="progress-fill" id="prog-fill-${card.id}"></div></div>
   <div class="cb-status" id="status-${card.id}"></div>
   <div class="open-link" id="open-link-${card.id}">
-    <button class="btn btn-link btn-sm" onclick="openResult('${card.id}')">↗ Open in ORBIT</button>
+    <button class="btn btn-link btn-sm" onclick="openResult('${card.id}')">Ã¢â€ â€” Open in ORBIT</button>
   </div>`;
 }
 
@@ -511,7 +534,7 @@ function buildLayerSection(card) {
         <label><input type="radio" name="lm-${card.id}" value="selection" ${mode==='selection'?'checked':''} onchange="onLayerModeChange('${card.id}','selection')"> Selection</label>
       </div>
       <div id="capture-row-${card.id}" style="${mode==='selection'?'':'display:none'};margin-top:6px;display:${mode==='selection'?'flex':'none'};gap:8px;align-items:center">
-        <button class="btn btn-ghost btn-sm" onclick="captureSelection('${card.id}')">📌 Capture current selection</button>
+        <button class="btn btn-ghost btn-sm" onclick="captureSelection('${card.id}')">Ã°Å¸â€œÅ’ Capture current selection</button>
         <span id="capture-count-${card.id}" style="font-size:11px;color:var(--text3)">${(card.selectedObjectIds||[]).length > 0 ? (card.selectedObjectIds.length)+' objects' : 'None captured'}</span>
       </div>
       <div id="layer-list-${card.id}" style="${mode==='bylayer'?'':'display:none'}">
@@ -541,7 +564,7 @@ function bindCard(card) {
   }
 
   // Model dropdown: same idea. If we have a projectId but no cached
-  // models, fetch — onModels will then re-select card.modelId.
+  // models, fetch Ã¢â‚¬â€ onModels will then re-select card.modelId.
   if (state.models[card.id]) {
     populateMdlCombo(card.id, state.models[card.id], card.modelId);
   } else if (card.projectId) {
@@ -575,7 +598,7 @@ function bindCard(card) {
   }
 }
 
-// ── Card interactions ─────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Card interactions Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function toggleCard(cardId) {
   const el = document.getElementById('card-' + cardId);
   const expanded = el.classList.toggle('expanded');
@@ -607,10 +630,10 @@ function doAction(cardId) {
   });
   const btn = document.getElementById('action-btn-' + cardId);
   if (btn) btn.disabled = true;
-  showProgress(cardId, card.type === 'send' ? 'Preparing…' : 'Fetching…', 0);
+  showProgress(cardId, card.type === 'send' ? 'PreparingÃ¢â‚¬Â¦' : 'FetchingÃ¢â‚¬Â¦', 0);
 }
 
-// ── Project / Model ───────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Project / Model Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function refreshProjects(cardId) {
   sendToHost('getProjects', { cardId });
 }
@@ -657,13 +680,13 @@ function onModels(cardId, items) {
 function populateProjCombo(cardId, items, selectedId) {
   const sel = document.getElementById('proj-' + cardId);
   if (!sel) return;
-  sel.innerHTML = '<option value="">Select project…</option>' +
+  sel.innerHTML = '<option value="">Select projectÃ¢â‚¬Â¦</option>' +
     items.map(p => `<option value="${p.id}" ${p.id===selectedId?'selected':''}>${esc(p.name)}</option>`).join('');
 }
 function populateMdlCombo(cardId, items, selectedId) {
   const sel = document.getElementById('mdl-' + cardId);
   if (!sel) return;
-  sel.innerHTML = '<option value="">Select model…</option>' +
+  sel.innerHTML = '<option value="">Select modelÃ¢â‚¬Â¦</option>' +
     items.map(m => `<option value="${m.id}" ${m.id===selectedId?'selected':''}>${esc(m.name)}</option>`).join('');
 }
 function toggleNewProj(cardId) {
@@ -685,7 +708,7 @@ function createProject(cardId) {
   toggleNewProj(cardId);
 }
 
-// ── Layers ────────────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Layers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function onLayers(layers) {
   state.layers = layers;
   // refresh layer lists for expanded cards
@@ -742,7 +765,7 @@ function selectAllLayers(cardId, all) {
   }
 }
 
-// ── Progress / Status ─────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Progress / Status Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function onProgress(cardId, status, percent) {
   showProgress(cardId, status, percent);
 }
@@ -752,7 +775,7 @@ function onSendOk(cardId, versionId, url) {
   const ui = getCardUi(cardId);
   ui.resultUrl = url || '';
   hideProgress(cardId);
-  showStatus(cardId, '✓ Version created', 'ok');
+  showStatus(cardId, 'Ã¢Å“â€œ Version created', 'ok');
   const openLink = document.getElementById('open-link-' + cardId);
   if (openLink) { openLink.dataset.url = url || ''; openLink.classList.add('show'); }
   const btn = document.getElementById('action-btn-' + cardId);
@@ -769,7 +792,7 @@ function onReceiveOk(cardId, summary, warnings) {
   const card = state.cards.find(c => c.id === cardId);
   if (card) { card.lastReceivedAt = new Date().toISOString(); updateCardHeader(card); }
   hideProgress(cardId);
-  showStatus(cardId, summary || '✓ Received', 'ok');
+  showStatus(cardId, summary || 'Ã¢Å“â€œ Received', 'ok');
   const btn = document.getElementById('action-btn-' + cardId);
   if (btn) btn.disabled = false;
   if (warnings && warnings.length > 0) {
@@ -778,7 +801,7 @@ function onReceiveOk(cardId, summary, warnings) {
 }
 // `persist=true` (the default) updates state.uiState so the progress
 // survives a renderCards() rebuild. bindCard() calls this with
-// persist=false when it's restoring previously-saved state — no need
+// persist=false when it's restoring previously-saved state Ã¢â‚¬â€ no need
 // to write the same values back to state in that case.
 function showProgress(cardId, status, percent, persist = true) {
   if (persist) {
@@ -829,7 +852,7 @@ function updateCardHeader(card) {
   if (ago && timestamp) ago.textContent = timeAgo(timestamp);
 }
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Utilities Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function showPage(page) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
@@ -845,7 +868,7 @@ function timeAgo(iso) {
   return Math.floor(d/86400) + 'd ago';
 }
 
-// ── Init ──────────────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Init Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 sendToHost('ready', {});
 </script>
 </body>
