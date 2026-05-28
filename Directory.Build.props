@@ -61,7 +61,7 @@
     <OrbitSdkPath Condition="'$(OrbitSdkPath)' == ''">$(MSBuildThisFileDirectory)vendor\SDK\src</OrbitSdkPath>
 
     <!-- Lockstep version. CI overrides via -p:OrbitConnectorVersion=$VERSION. -->
-    <OrbitConnectorVersion Condition="'$(OrbitConnectorVersion)' == ''">0.1.10</OrbitConnectorVersion>
+    <OrbitConnectorVersion Condition="'$(OrbitConnectorVersion)' == ''">0.1.11</OrbitConnectorVersion>
     <Version>$(OrbitConnectorVersion)</Version>
     <AssemblyVersion>$(OrbitConnectorVersion).0</AssemblyVersion>
     <FileVersion>$(OrbitConnectorVersion).0</FileVersion>

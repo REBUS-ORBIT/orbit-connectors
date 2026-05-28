@@ -41,7 +41,15 @@
   }
   #wordmark{font-size:14px;font-weight:700;color:var(--accent);letter-spacing:.05em}
   #header-sub{font-size:10px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase;margin-top:1px}
-  #header-right{display:flex;align-items:center;gap:8px}
+  #header-right{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+  #version-label{font-size:11px;color:var(--text3);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+  #btn-check-updates{
+    background:none;border:none;padding:0;margin:0;cursor:pointer;
+    font-family:var(--font);font-size:10px;color:#66B2FF;
+    text-decoration:none;letter-spacing:.04em;
+  }
+  #btn-check-updates:hover{text-decoration:underline}
+  #btn-check-updates:disabled{opacity:.5;cursor:default;text-decoration:none}
 
   /* ── Buttons ── */
   .btn{
@@ -186,7 +194,10 @@
     <div id="wordmark">ORBIT</div>
     <div id="header-sub">Connector</div>
   </div>
-  <div id="header-right"></div>
+  <div id="header-right">
+    <span id="version-label">v—</span>
+    <button id="btn-check-updates" type="button" title="Check GitHub for a newer connector release">Check for updates</button>
+  </div>
 </div>
 
 <!-- Login page -->
@@ -261,6 +272,8 @@ function sendToHost(action, data) {
 window.orbitReceive = function(msg) {
   const m = JSON.parse(msg);
   switch (m.type) {
+    case 'version':      onVersion(m.version); break;
+    case 'updateCheck':  onUpdateCheck(m); break;
     case 'loginOk':      onLoginOk(m); break;
     case 'loginErr':     onLoginErr(m.message); break;
     case 'projects':     onProjects(m.cardId, m.items); break;
@@ -277,6 +290,38 @@ window.orbitReceive = function(msg) {
     case 'logout':       onLogout(); break;
   }
 };
+
+// ── Version + update check (v0.1.2 / restored in v0.1.8 / v0.1.11) ───────────
+function onVersion(version) {
+  const lbl = document.getElementById('version-label');
+  if (lbl) lbl.textContent = 'v' + (version || 'dev');
+}
+
+document.getElementById('btn-check-updates').onclick = () => {
+  const btn = document.getElementById('btn-check-updates');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  sendToHost('checkUpdates', {});
+};
+
+function onUpdateCheck(m) {
+  const btn = document.getElementById('btn-check-updates');
+  if (btn) { btn.disabled = false; btn.textContent = 'Check for updates'; }
+  if (!m) return;
+  if (m.kind === 'uptodate') {
+    alert("You're up to date (v" + (m.current || 'dev') + ').');
+  } else if (m.kind === 'newer') {
+    const want = confirm(
+      'A newer ORBIT Connector is available.\n\n' +
+      'Installed:  v' + (m.current || 'dev') + '\n' +
+      'Latest:     v' + (m.latest  || '?')   + '\n\n' +
+      'Open the GitHub release page to download it?');
+    if (want && m.url) sendToHost('openUrl', { url: m.url });
+  } else {
+    alert("Couldn't check for updates: " + (m.message || 'unknown error') + '. Try again later.');
+  }
+}
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 document.getElementById('btn-oauth').onclick = () => {

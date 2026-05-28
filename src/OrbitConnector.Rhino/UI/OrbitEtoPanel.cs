@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Reflection;
+using System.Threading;
 using Eto.Forms;
 using Orbit.Sdk.Api;
 using Orbit.Sdk.Api.Models;
@@ -18,6 +21,19 @@ namespace OrbitConnector.Rhino.UI;
 public class OrbitEtoPanel : Panel, IPanel
 {
     public static System.Guid PanelId => typeof(OrbitEtoPanel).GUID;
+
+    // ── Update check (v0.1.2) ─────────────────────────────────────────────────
+
+    /// <summary>GitHub URL the user is sent to when they want to download the latest release.</summary>
+    private const string LatestReleasePageUrl =
+        "https://github.com/REBUS-ORBIT/orbit-connectors/releases/latest";
+
+    /// <summary>GitHub API endpoint that returns the latest release as JSON.</summary>
+    private const string LatestReleaseApiUrl =
+        "https://api.github.com/repos/REBUS-ORBIT/orbit-connectors/releases/latest";
+
+    /// <summary>Process-wide HttpClient. Constructing one per click is an anti-pattern.</summary>
+    private static readonly HttpClient _http = CreateUpdateCheckClient();
 
     // ── Core services ─────────────────────────────────────────────────────────
 
@@ -66,6 +82,21 @@ public class OrbitEtoPanel : Panel, IPanel
         Content = _webView;
 
         LoadHtml();
+    }
+
+    private static HttpClient CreateUpdateCheckClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(10),
+        };
+        // GitHub rate-limits anonymous requests harder when the User-Agent is
+        // missing or generic; identifying as the connector is friendlier.
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            $"OrbitConnector-Rhino/{OrbitConnectorPlugin.Version}");
+        client.DefaultRequestHeaders.Accept.Add(
+            new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        return client;
     }
 
     // ── HTML loading ──────────────────────────────────────────────────────────
@@ -139,6 +170,9 @@ public class OrbitEtoPanel : Panel, IPanel
             {
                 case "ready":
                     _uiReady = true;
+                    // v0.1.2: surface the connector version into the WebView so the
+                    // header footer can render "v<X.Y.Z>" without a round-trip.
+                    SendToJs(new { type = "version", version = OrbitConnectorPlugin.Version });
                     await TryRestoreSessionAsync();
                     break;
 
@@ -200,6 +234,12 @@ public class OrbitEtoPanel : Panel, IPanel
                     if (!string.IsNullOrEmpty(urlToOpen))
                         Application.Instance.AsyncInvoke(() =>
                             Process.Start(new ProcessStartInfo(urlToOpen) { UseShellExecute = true }));
+                    break;
+
+                case "checkUpdates":
+                    // v0.1.2: GitHub-API-backed update check, mirrored back into JS so
+                    // the header link can change its label / open a confirm dialog.
+                    await HandleUpdateCheckAsync();
                     break;
             }
         }
@@ -558,6 +598,145 @@ public class OrbitEtoPanel : Panel, IPanel
         {
             SendToJs(new { type = "receiveErr", cardId, message = ex.Message });
         }
+    }
+
+    // ── Update check (v0.1.2) ─────────────────────────────────────────────────
+    //
+    // The header bar in the WebView UI ships a "Check for updates" link next to
+    // the version label. Clicking it posts orbit://msg/checkUpdates?d={}; this
+    // method hits the GitHub releases API, compares against the assembly
+    // version, and sends one of three structured replies back to JS so the
+    // panel can render the right toast / confirm dialog without bouncing
+    // through any native MessageBox (which would block the panel's UI thread
+    // and feel out of place on top of the WebView).
+
+    private async Task HandleUpdateCheckAsync()
+    {
+        try
+        {
+            var result = await CheckForUpdatesAsync(CancellationToken.None);
+            switch (result.Kind)
+            {
+                case UpdateCheckKind.UpToDate:
+                    SendToJs(new
+                    {
+                        type    = "updateCheck",
+                        kind    = "uptodate",
+                        current = OrbitConnectorPlugin.Version,
+                    });
+                    break;
+                case UpdateCheckKind.NewerAvailable:
+                    SendToJs(new
+                    {
+                        type    = "updateCheck",
+                        kind    = "newer",
+                        current = OrbitConnectorPlugin.Version,
+                        latest  = result.LatestVersion,
+                        url     = LatestReleasePageUrl,
+                    });
+                    break;
+                case UpdateCheckKind.Failed:
+                default:
+                    SendToJs(new
+                    {
+                        type    = "updateCheck",
+                        kind    = "failed",
+                        message = result.ErrorMessage ?? "unknown error",
+                    });
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Defensive: CheckForUpdatesAsync wraps its own failures into a
+            // result, but if the wrapper itself throws (allocation failure,
+            // CTS misuse, etc.) we still report instead of leaving the JS
+            // link disabled forever.
+            SendToJs(new
+            {
+                type    = "updateCheck",
+                kind    = "failed",
+                message = ex.Message,
+            });
+        }
+    }
+
+    private static async Task<UpdateCheckResult> CheckForUpdatesAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await _http.GetAsync(LatestReleaseApiUrl, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return UpdateCheckResult.Fail(
+                    $"GitHub returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            }
+
+            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var json = JObject.Parse(body);
+            var tagName = (string?)json["tag_name"];
+            if (string.IsNullOrWhiteSpace(tagName))
+            {
+                return UpdateCheckResult.Fail("response did not include tag_name");
+            }
+
+            var latest = NormaliseVersion(tagName);
+            var current = NormaliseVersion(OrbitConnectorPlugin.Version);
+            if (latest == null)
+            {
+                return UpdateCheckResult.Fail($"could not parse latest tag '{tagName}'");
+            }
+
+            if (current != null && latest > current)
+            {
+                return UpdateCheckResult.Newer(tagName.TrimStart('v', 'V'));
+            }
+            return UpdateCheckResult.UpToDate();
+        }
+        catch (TaskCanceledException)
+        {
+            return UpdateCheckResult.Fail("request timed out");
+        }
+        catch (HttpRequestException ex)
+        {
+            return UpdateCheckResult.Fail(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            return UpdateCheckResult.Fail(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Parse "v0.1.2", "0.1.2", or "0.1.2+sha" into a System.Version. Returns
+    /// null if the leading numeric portion isn't a recognisable version.
+    /// </summary>
+    private static System.Version? NormaliseVersion(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var trimmed = raw.Trim().TrimStart('v', 'V');
+        var plus = trimmed.IndexOf('+');
+        if (plus >= 0) trimmed = trimmed[..plus];
+        var dash = trimmed.IndexOf('-');
+        if (dash >= 0) trimmed = trimmed[..dash];   // strip pre-release suffix
+        return System.Version.TryParse(trimmed, out var v) ? v : null;
+    }
+
+    private enum UpdateCheckKind { UpToDate, NewerAvailable, Failed }
+
+    private readonly struct UpdateCheckResult
+    {
+        public UpdateCheckKind Kind { get; }
+        public string? LatestVersion { get; }
+        public string? ErrorMessage { get; }
+
+        private UpdateCheckResult(UpdateCheckKind kind, string? latest, string? error)
+        {
+            Kind = kind; LatestVersion = latest; ErrorMessage = error;
+        }
+        public static UpdateCheckResult UpToDate() => new(UpdateCheckKind.UpToDate, null, null);
+        public static UpdateCheckResult Newer(string latest) => new(UpdateCheckKind.NewerAvailable, latest, null);
+        public static UpdateCheckResult Fail(string message) => new(UpdateCheckKind.Failed, null, message);
     }
 
     // ── IPanel ────────────────────────────────────────────────────────────────
