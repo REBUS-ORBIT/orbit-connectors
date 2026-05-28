@@ -27,37 +27,20 @@ public class OrbitConnectorPlugin : PlugIn
     // baked into the assembly via AssemblyInformationalVersionAttribute.
     public static new string Version { get; } = ResolveVersion();
 
-    // ---- Plugin Manager icon (Rhino Options → Plug-ins) --------------------
+    // ---- Plugin Manager icon ------------------------------------------------
     //
-    // RhinoCommon 8 exposes PlugIn.Icon as a *method* Icon(Size) returning
-    // Bitmap (not a property). We override it to serve orbit-logo.png at
-    // whatever size Rhino requests. Null-on-failure: Rhino shows its default.
+    // The [assembly: PlugInDescription(DescriptionType.Icon, "<resource>")] in
+    // Properties/AssemblyInfo.cs tells Rhino's scanner which embedded manifest
+    // resource to use for the Plugin Manager icon. No PlugIn.Icon override is
+    // needed here: the NuGet stub for RhinoCommon 8 does not mark Icon(Size)
+    // as virtual, so overriding it would break CI compilation.
     //
-    // System.Drawing types are referenced safely here — the csproj already
-    // pulls in System.Drawing.Common for compile-time resolution of the
-    // Panels.RegisterPanel overload, and the DLL is NOT bundled with the
-    // payload (ExcludeAssets="runtime" PrivateAssets="all"), so Rhino's own
-    // shared framework supplies it at runtime without any ALC conflict.
+    // The panel rail icon (shown in Rhino's side dock) is handled separately
+    // via LoadOrbitPanelIcon() in OnLoad → Panels.RegisterPanel.
     //
-    public override System.Drawing.Bitmap Icon(System.Drawing.Size size)
-    {
-        try
-        {
-            var asm = typeof(OrbitConnectorPlugin).Assembly;
-            using var stream = asm.GetManifestResourceStream(
-                "OrbitConnector.Rhino.Resources.orbit-logo.png");
-            if (stream == null) return null!;
-            using var bmp = new System.Drawing.Bitmap(stream);
-            return new System.Drawing.Bitmap(bmp, size);
-        }
-        catch
-        {
-            return null!;
-        }
-    }
 
-    // Returns a System.Drawing.Icon version of the logo for use as the
-    // dockable-panel rail icon in Panels.RegisterPanel.
+    // Returns a System.Drawing.Icon version of orbit-logo.png for use as the
+    // dockable-panel rail icon passed to Panels.RegisterPanel.
     private static System.Drawing.Icon? LoadOrbitPanelIcon()
     {
         try
