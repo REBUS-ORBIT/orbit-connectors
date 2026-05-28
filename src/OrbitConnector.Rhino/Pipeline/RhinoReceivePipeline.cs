@@ -10,64 +10,45 @@ namespace OrbitConnector.Rhino.Pipeline;
 
 /// <summary>
 /// Orchestrates the full receive pipeline:
-/// Fetch version → walk entire object tree (deep ref discovery, cached) →
-/// traverse tree by collection type → convert → bake into RhinoDoc.
+/// Fetch version -> walk entire object tree (deep ref discovery, cached) ->
+/// traverse tree by collection type -> convert -> bake into RhinoDoc.
 ///
 /// <para>
-/// <b>v0.1.12 rewrite.</b> The v0.1.10 / v0.1.11 pipeline assumed every
-/// model root carried a non-empty <c>elements</c> array of direct
-/// reference stubs. That assumption holds when receiving a model the
-/// same connector pushed, but fails for models produced by other ORBIT
-/// clients (Python, PRISM, the legacy 3DConvert pipeline, and any
-/// Speckle-fork sender) that detach <c>elements</c> with @ prefixes,
-/// nest references deeper inside the tree, or carry the geometry on
-/// proxies / <c>displayValue</c> instead. The user-visible symptom was
-/// <c>"The root object has no elements. Nothing to receive."</c>.
+/// <b>v0.1.13 changes</b> (on top of the v0.1.12 rewrite):
 /// </para>
 ///
-/// <para>
-/// The new strategy mirrors the visualiser orchestrator
-/// (REBUS-ORBIT/prism :: <c>OrbitReceivePipeline.cs</c> +
-/// <c>HttpOrbitApi.cs</c>) which was hardened against live ORBIT
-/// payloads in PRISM commits <c>50f8c39</c> and <c>ad62e31</c>:
-/// </para>
-///
-/// <list type="number">
+/// <list type="bullet">
 ///   <item><description>
-///     Resolve <c>version.referencedObject</c> via the GraphQL
-///     <c>project(id).model(id).versions</c> query
-///     (<see cref="OrbitClient.GetVersionsAsync"/>).
+///     Stub resolution is now <em>recursive</em> -- a stub that points
+///     to another stub (which a few legacy senders emit) is followed
+///     to convergence instead of being dropped one level early.
 ///   </description></item>
 ///   <item><description>
-///     Fetch the root via REST <c>GET /objects/{streamId}/{rootHash}/single</c>
-///     (<see cref="ServerTransport.GetObjectAsync"/>).
+///     Collection-child enumeration now also walks <c>data</c>,
+///     <c>children</c>, and <c>objects</c> on top of <c>elements</c> /
+///     <c>displayValue</c>. Speckle's <c>Collection</c> and
+///     <c>Organization.Model</c> types nest geometry under any of these,
+///     and the v0.1.12 pipeline only walked the first two.
 ///   </description></item>
 ///   <item><description>
-///     Walk <em>every</em> JSON node in the root, yielding every
-///     <c>referencedId</c> regardless of which property holds it.
-///     De-dupe and fetch each unique child via the same REST endpoint.
-///     Recurse on the children — bounded only by the closure table size.
+///     Layer path separators are normalised (<c>/</c>, <c>\\</c>, and
+///     <c>::</c> all map to Rhino's <c>::</c>). This unblocks PRISM and
+///     3DConvert payloads which use forward slashes in their layer
+///     hierarchies.
 ///   </description></item>
 ///   <item><description>
-///     Traverse the now fully-resolved tree from the root. Collection
-///     nodes (<c>collectionType</c> set, or <c>speckle_type</c> matches a
-///     known collection discriminator, or <c>elements</c> is a non-empty
-///     array) push their children. Leaf nodes go through
-///     <see cref="OrbitToRhinoConverter"/> and are added to the
-///     Rhino doc on the layer encoded by the leaf's
-///     <c>layerPath</c> (or the nearest ancestor collection name).
+///     Per-leaf diagnostic line via <c>RhinoApp.WriteLine</c>
+///     (<c>[ORBIT] bake: type=... id=... -> layer 'X::Y' geom=Mesh</c>).
+///     Skipped objects log the reason (unsupported type, conversion
+///     failure, missing geometry).
+///   </description></item>
+///   <item><description>
+///     Objects whose primary <c>speckle_type</c> is unsupported but
+///     which carry a <c>displayValue</c> mesh now bake from that mesh
+///     instead of being silently dropped (handled inside the converter,
+///     this pipeline simply trusts the converter's verdict).
 ///   </description></item>
 /// </list>
-///
-/// <para>
-/// All HTTP IO goes through <see cref="ServerTransport"/>; the only
-/// blob endpoint the connector uses (when texture support is wired in)
-/// is <c>GET /api/stream/{streamId}/blob/{blobId}</c> via the existing
-/// <see cref="OrbitBlobUploader"/> sibling. ORBIT blob ids are 10-char
-/// server-assigned strings, not SHA-256 hashes, so any download-side
-/// integrity check would always fail — the connector has none, and
-/// none must be added on the receive path.
-/// </para>
 /// </summary>
 public class RhinoReceivePipeline
 {
@@ -81,8 +62,8 @@ public class RhinoReceivePipeline
     /// container of nested children. Pulled from the visualiser's
     /// equivalent set plus the prefixes the C# Speckle-ORBIT SDK
     /// emits today. Anything not in this set <em>but</em> with a
-    /// non-empty <c>elements</c> array is still treated as a
-    /// collection — this is the loose fallback for legacy payloads.
+    /// non-empty children array is still treated as a collection --
+    /// this is the loose fallback for legacy payloads.
     /// </summary>
     private static readonly HashSet<string> CollectionTypeDiscriminators = new(StringComparer.Ordinal)
     {
@@ -92,7 +73,20 @@ public class RhinoReceivePipeline
         "Objects.Organization.Model",
     };
 
-    private readonly OrbitToRhinoConverter _converter = new();
+    /// <summary>
+    /// JSON property names a sender might use to attach the geometry
+    /// children of a collection node. We walk all of these (in this order).
+    /// </summary>
+    private static readonly string[] CollectionChildProperties =
+    {
+        "elements",
+        "displayValue",
+        "data",
+        "children",
+        "objects",
+    };
+
+    private readonly OrbitToRhinoConverter _converter = new() { Verbose = true };
 
     /// <summary>
     /// Execute a full receive. Downloads the latest version (or
@@ -113,10 +107,7 @@ public class RhinoReceivePipeline
         var modelId   = card.ModelId   ?? throw new InvalidOperationException("Card has no model selected.");
 
         // 1. RESOLVE VERSION (GraphQL).
-        //    OrbitClient.GetVersionsAsync wraps the same `project(id).model(id).versions`
-        //    query the visualiser uses for its single-version variant — see
-        //    REBUS-ORBIT/prism :: HttpOrbitApi.VersionQuery.
-        progress?.Report(("Fetching version…", 5));
+        progress?.Report(("Fetching version...", 5));
         var versions = await client.GetVersionsAsync(projectId, modelId, ct);
         if (versions.Count == 0)
             throw new InvalidOperationException("No versions found for this model.");
@@ -133,10 +124,7 @@ public class RhinoReceivePipeline
             $"version={version.Id} root={rootObjectId}");
 
         // 2. DOWNLOAD THE ENTIRE OBJECT TREE.
-        //    REST GET /objects/{streamId}/{id}/single per object, recursively
-        //    walking every detached reference no matter where it sits in the
-        //    tree. Each id is fetched at most once.
-        progress?.Report(("Downloading object tree…", 10));
+        progress?.Report(("Downloading object tree...", 10));
         using var transport = new ServerTransport(serverUrl, projectId, token);
 
         var objects = await FetchAllObjectsAsync(
@@ -145,12 +133,10 @@ public class RhinoReceivePipeline
             ct,
             (resolved, total) =>
             {
-                // 10 → 70 % for tree download; whatever closure size we
-                // discover incrementally feeds the percent.
                 int pct = total > 0
                     ? Math.Min(70, 10 + resolved * 60 / Math.Max(total, resolved))
                     : 10;
-                progress?.Report(($"Downloading… {resolved}/{Math.Max(total, resolved)}", pct));
+                progress?.Report(($"Downloading... {resolved}/{Math.Max(total, resolved)}", pct));
             });
 
         RhinoApp.WriteLine($"[ORBIT] receive: fetched {objects.Count} object(s) from server");
@@ -160,7 +146,7 @@ public class RhinoReceivePipeline
                 $"Root object '{rootObjectId}' did not materialise after tree walk.");
 
         // 3. TRAVERSE THE TREE AND BAKE.
-        progress?.Report(("Baking geometry…", 75));
+        progress?.Report(("Baking geometry...", 75));
 
         var warnings   = new List<string>();
         var bakeState  = new BakeState(doc, _converter, warnings);
@@ -168,9 +154,7 @@ public class RhinoReceivePipeline
         doc.BeginUndoRecord("ORBIT Receive");
         try
         {
-            // Root collection: descend into its children. If the root
-            // itself is a leaf geometry, treat it as the only object.
-            TraverseAndBake(rootObj, objects, currentLayerPath: null, bakeState, ct);
+            TraverseAndBake(rootObj, objects, currentLayerPath: null, inheritedColor: null, bakeState, ct);
         }
         finally
         {
@@ -182,21 +166,14 @@ public class RhinoReceivePipeline
 
         RhinoApp.WriteLine(
             $"[ORBIT] receive: baked {bakeState.ObjectCount} object(s) into " +
-            $"{bakeState.LayerCount} layer(s); {warnings.Count} warning(s)");
+            $"{bakeState.LayerCount} layer(s); skipped={bakeState.SkippedCount}; " +
+            $"{warnings.Count} warning(s)");
 
         return new ReceiveResult(bakeState.ObjectCount, bakeState.LayerCount, warnings);
     }
 
-    // ── Tree fetch ───────────────────────────────────────────────────────────
+    // -- Tree fetch ----------------------------------------------------------
 
-    /// <summary>
-    /// Fetch <paramref name="rootId"/> and every object reachable from
-    /// it via <c>referencedId</c> stubs anywhere in the JSON body.
-    /// Returns a dictionary keyed by content hash. Fetches the
-    /// closure size from <c>__closure</c> on the root for progress
-    /// reporting, falling back to the resolved-count when the root
-    /// has no closure.
-    /// </summary>
     private static async Task<Dictionary<string, JObject>> FetchAllObjectsAsync(
         string rootId,
         Func<string, Task<string?>> fetch,
@@ -237,11 +214,6 @@ public class RhinoReceivePipeline
 
             fetched[id] = obj;
 
-            // The root carries __closure: { childId → depth }. Use its
-            // size as the total for progress reporting on the first
-            // fetch. Subsequent fetches use whichever number is larger
-            // (we may discover more references than the closure listed
-            // for older / inconsistent payloads).
             if (id == rootId && obj["__closure"] is JObject closure)
                 total = closure.Count + 1; // + the root itself
 
@@ -257,14 +229,6 @@ public class RhinoReceivePipeline
         return fetched;
     }
 
-    /// <summary>
-    /// Yield every <c>referencedId</c> found anywhere in the JSON tree
-    /// rooted at <paramref name="node"/>. Mirrors the visualiser's
-    /// <c>OrbitObject.EnumerateReferenceIds</c> behaviour: a node that
-    /// has its own <c>referencedId</c> is a stub and short-circuits
-    /// (its children, if any, will be discovered when the referenced
-    /// object is fetched).
-    /// </summary>
     private static IEnumerable<string> EnumerateReferenceIds(JToken? node)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -289,8 +253,6 @@ public class RhinoReceivePipeline
                 }
                 foreach (var prop in obj.Properties())
                 {
-                    // Skip the closure table; its keys are already child ids
-                    // and the values are depth ints — not detached references.
                     if (prop.Name == "__closure") continue;
                     foreach (var r in WalkRefs(prop.Value)) yield return r;
                 }
@@ -302,7 +264,7 @@ public class RhinoReceivePipeline
         }
     }
 
-    // ── Tree traversal + bake ────────────────────────────────────────────────
+    // -- Tree traversal + bake -----------------------------------------------
 
     private sealed class BakeState
     {
@@ -310,6 +272,7 @@ public class RhinoReceivePipeline
         public OrbitToRhinoConverter Converter { get; }
         public List<string> Warnings { get; }
         public int ObjectCount { get; set; }
+        public int SkippedCount { get; set; }
         public HashSet<int> LayersTouched { get; } = new();
         public int LayerCount => LayersTouched.Count;
 
@@ -319,29 +282,22 @@ public class RhinoReceivePipeline
         }
     }
 
-    /// <summary>
-    /// Recursively traverse a resolved object tree. Collections push
-    /// their children with a deeper <paramref name="currentLayerPath"/>;
-    /// leaf nodes are converted and baked.
-    /// </summary>
     private void TraverseAndBake(
         JObject node,
         IReadOnlyDictionary<string, JObject> objects,
         string? currentLayerPath,
+        long? inheritedColor,
         BakeState state,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        // Resolve a node that might itself be a reference stub.
         node = ResolveStub(node, objects);
-
         var speckleType = node["speckle_type"]?.Value<string>() ?? "";
 
         if (IsCollection(node, speckleType))
         {
-            // Layer naming priority: explicit layerPath > name > falls through to parent.
-            var ownLayerPath = node["layerPath"]?.Value<string>();
+            var ownLayerPath = NormaliseLayerPath(node["layerPath"]?.Value<string>());
             var ownName      = node["name"]?.Value<string>();
 
             string? childLayerPath = currentLayerPath;
@@ -352,22 +308,26 @@ public class RhinoReceivePipeline
                     ? ownName
                     : $"{currentLayerPath}::{ownName}";
 
-            var ownColor = node["layerColor"]?.Value<long?>();
+            var ownColor = node["layerColor"]?.Value<long?>() ?? inheritedColor;
 
-            // Walk elements + displayValue (some collections carry geometry
-            // directly under displayValue) + any other nested OrbitObject
-            // collection-like children the SDK might add later.
+            int childCount = 0;
             foreach (var childToken in EnumerateCollectionChildren(node))
             {
                 if (childToken is not JObject childObj) continue;
+                childCount++;
                 TraverseAndBakeChild(
                     childObj, objects, childLayerPath, ownColor, state, ct);
+            }
+            if (childCount == 0)
+            {
+                RhinoApp.WriteLine(
+                    $"[ORBIT] traverse: collection type='{speckleType}' name='{ownName}' has 0 children");
             }
         }
         else
         {
-            // Root is itself a leaf — bake directly into the default layer.
-            BakeLeaf(node, currentLayerPath, layerColor: null, state);
+            // Root is itself a leaf -- bake directly.
+            BakeLeaf(node, currentLayerPath, inheritedColor, state);
         }
     }
 
@@ -385,19 +345,19 @@ public class RhinoReceivePipeline
 
         if (IsCollection(resolved, speckleType))
         {
-            // Nested collection: recurse, extending the layer path.
-            TraverseAndBake(resolved, objects, layerPath, state, ct);
+            TraverseAndBake(resolved, objects, layerPath, inheritedLayerColor, state, ct);
             return;
         }
 
         // Leaf geometry. Honour the leaf's own layerPath if it sets one;
         // otherwise inherit from the enclosing collection chain.
-        var leafLayerPath = resolved["layerPath"]?.Value<string>() ?? layerPath;
+        var leafLayerPath  = NormaliseLayerPath(resolved["layerPath"]?.Value<string>()) ?? layerPath;
         var leafLayerColor = resolved["layerColor"]?.Value<long?>() ?? inheritedLayerColor;
 
         // RhinoDataObject style: rawEncoding is a detached reference the
         // converter expects inline. Resolve it from our object cache so
-        // OrbitToRhinoConverter can read its `contents`.
+        // OrbitToRhinoConverter can read its `contents`. Same for
+        // displayValue when a sender uses detached display meshes.
         if (resolved["rawEncoding"] is JObject rawRef
             && rawRef["referencedId"]?.Value<string>() is string rawId
             && !string.IsNullOrEmpty(rawId)
@@ -407,16 +367,47 @@ public class RhinoReceivePipeline
             resolved["rawEncoding"] = rawObj;
         }
 
+        if (resolved["displayValue"] is JArray dvArr)
+        {
+            var inlinedDv = new JArray();
+            bool anyResolved = false;
+            foreach (var item in dvArr)
+            {
+                if (item is JObject dvObj
+                    && dvObj["referencedId"]?.Value<string>() is string dvRefId
+                    && !string.IsNullOrEmpty(dvRefId)
+                    && objects.TryGetValue(dvRefId, out var resolvedDv))
+                {
+                    inlinedDv.Add(resolvedDv);
+                    anyResolved = true;
+                }
+                else
+                {
+                    inlinedDv.Add(item);
+                }
+            }
+            if (anyResolved)
+            {
+                resolved = (JObject)resolved.DeepClone();
+                resolved["displayValue"] = inlinedDv;
+            }
+        }
+
         BakeLeaf(resolved, leafLayerPath, leafLayerColor, state);
     }
 
     private void BakeLeaf(JObject geoObj, string? layerPath, long? layerColor, BakeState state)
     {
+        var spType = geoObj["speckle_type"]?.Value<string>() ?? "unknown";
+        var orbitId = geoObj["id"]?.Value<string>() ?? "?";
+
         var geometry = state.Converter.Convert(geoObj);
         if (geometry == null)
         {
-            var spType = geoObj["speckle_type"]?.Value<string>() ?? "unknown";
-            state.Warnings.Add($"Skipped unsupported object type: {spType}");
+            state.SkippedCount++;
+            var msg = $"Skipped unsupported / unconvertible object: type='{spType}' id={orbitId}";
+            state.Warnings.Add(msg);
+            RhinoApp.WriteLine($"[ORBIT] bake skip: {msg}");
             return;
         }
 
@@ -429,46 +420,139 @@ public class RhinoReceivePipeline
         };
         ApplyMaterialColor(geoObj, attrs);
 
-        state.Doc.Objects.Add(geometry, attrs);
-        state.ObjectCount++;
+        // Stamp the ORBIT object id into the user dictionary so a future
+        // delete-and-replace receive can find the previously-baked object.
+        if (!string.IsNullOrEmpty(orbitId) && orbitId != "?")
+        {
+            try { attrs.SetUserString("ORBIT_objectId", orbitId); }
+            catch { /* attribute store is best-effort */ }
+        }
+
+        var addedGuid = state.Doc.Objects.Add(geometry, attrs);
+        if (addedGuid != Guid.Empty)
+        {
+            state.ObjectCount++;
+            var layerFullPath = state.Doc.Layers[layerIdx].FullPath;
+            RhinoApp.WriteLine(
+                $"[ORBIT] bake: type='{spType}' id={orbitId} -> layer '{layerFullPath}' geom={geometry.GetType().Name}");
+        }
+        else
+        {
+            state.SkippedCount++;
+            var msg = $"RhinoDoc.Objects.Add returned empty Guid for type='{spType}' id={orbitId}";
+            state.Warnings.Add(msg);
+            RhinoApp.WriteLine($"[ORBIT] bake skip: {msg}");
+        }
     }
 
     private static bool IsCollection(JObject node, string speckleType)
     {
         if (CollectionTypeDiscriminators.Contains(speckleType)) return true;
         if (!string.IsNullOrEmpty(node["collectionType"]?.Value<string>())) return true;
-        // Loose fallback: anything with a non-empty elements array
-        // walks like a collection. Avoids dropping legacy payloads that
-        // pre-date collectionType.
-        if (node["elements"] is JArray arr && arr.Count > 0) return true;
+
+        // Loose fallback: anything with a non-empty children array on any
+        // of the known collection child properties walks like a collection.
+        // Avoids dropping legacy payloads that pre-date collectionType, and
+        // avoids treating senders that put collection children under
+        // `data` / `objects` as leaves.
+        foreach (var prop in CollectionChildProperties)
+        {
+            if (node[prop] is JArray arr && arr.Count > 0)
+            {
+                // Geometry leaves with displayValue meshes also have a
+                // non-empty `displayValue` array but ARE leaves; we want
+                // them to go through the converter, not be re-walked.
+                if (prop == "displayValue" && IsKnownGeometryLeaf(speckleType))
+                    return false;
+                return true;
+            }
+        }
         return false;
+    }
+
+    private static bool IsKnownGeometryLeaf(string speckleType)
+    {
+        // Any speckle_type starting with "Objects.Geometry." is a leaf
+        // (Mesh / Brep / Surface / Curve / Point / etc.). Their
+        // `displayValue` is part of the leaf's geometry, not children.
+        return speckleType.StartsWith("Objects.Geometry.", StringComparison.Ordinal)
+            || speckleType.Contains("RhinoObject");
     }
 
     private static IEnumerable<JToken> EnumerateCollectionChildren(JObject collection)
     {
-        if (collection["elements"] is JArray elements)
-            foreach (var c in elements) yield return c;
-
-        // Some senders pack the per-collection display geometry into
-        // displayValue instead of elements. The receive path treats
-        // them identically — both are children to walk.
-        if (collection["displayValue"] is JArray displayValue)
-            foreach (var c in displayValue) yield return c;
+        foreach (var prop in CollectionChildProperties)
+        {
+            // Skip displayValue when this collection node is also tagged as
+            // a known geometry leaf (defence-in-depth alongside IsCollection
+            // above; in practice IsCollection already short-circuits this).
+            if (collection[prop] is JArray arr)
+            {
+                foreach (var c in arr) yield return c;
+            }
+            else if (collection[prop] is JObject one)
+            {
+                yield return one;
+            }
+        }
     }
 
+    /// <summary>
+    /// Recursively follow <c>referencedId</c> stubs until we hit a real
+    /// object (or run out of resolutions). The v0.1.12 implementation only
+    /// followed one level, which dropped geometry whenever a sender emitted
+    /// a stub-of-a-stub (rare but seen on a couple of legacy 3DConvert
+    /// payloads).
+    /// </summary>
     private static JObject ResolveStub(
         JObject node, IReadOnlyDictionary<string, JObject> objects)
     {
-        var refId = node["referencedId"]?.Value<string>();
-        if (string.IsNullOrEmpty(refId)) return node;
-        return objects.TryGetValue(refId, out var resolved) ? resolved : node;
+        // Bound the chain length to defend against pathological cycles.
+        for (int hops = 0; hops < 8; hops++)
+        {
+            var refId = node["referencedId"]?.Value<string>();
+            if (string.IsNullOrEmpty(refId)) return node;
+            if (!objects.TryGetValue(refId, out var resolved)) return node;
+            if (resolved == node) return node;
+            node = resolved;
+        }
+        return node;
     }
 
-    // ── Layer management ──────────────────────────────────────────────────────
+    /// <summary>
+    /// Normalise a Speckle/ORBIT layerPath onto Rhino's <c>::</c> separator.
+    /// Senders use any of <c>::</c> (Speckle Rhino connector), <c>/</c>
+    /// (PRISM, 3DConvert, the Speckle web frontend), or <c>\\</c> (older
+    /// Vectorworks payloads). Returns null for null/empty input.
+    /// </summary>
+    private static string? NormaliseLayerPath(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        // Already Rhino-native.
+        if (raw.Contains("::") && !raw.Contains('/') && !raw.Contains('\\'))
+            return raw.Trim();
+
+        // Replace `\` and `/` with `::`. Two-pass so `/` inside a `::`
+        // segment doesn't double-fire.
+        var withColons = raw.Replace("\\", "::").Replace("/", "::");
+
+        // Collapse runs of separators (`::::` -> `::`) and strip empty
+        // leading / trailing segments.
+        var parts = withColons.Split(new[] { "::" }, StringSplitOptions.RemoveEmptyEntries)
+                              .Select(p => p.Trim())
+                              .Where(p => p.Length > 0)
+                              .ToArray();
+        if (parts.Length == 0) return null;
+        return string.Join("::", parts);
+    }
+
+    // -- Layer management ----------------------------------------------------
 
     /// <summary>
     /// Finds or creates a Rhino layer hierarchy matching <paramref name="layerPath"/>
-    /// (Rhino-style <c>Parent::Child</c> notation). Returns the leaf layer's index.
+    /// (Rhino-style <c>Parent::Child</c> notation, post-normalisation).
+    /// Returns the leaf layer's index.
     /// </summary>
     private static int EnsureLayer(RhinoDoc doc, string layerPath, long? packedArgb)
     {
@@ -495,7 +579,7 @@ public class RhinoReceivePipeline
 
             var newLayer = new Layer
             {
-                Name         = seg,
+                Name          = seg,
                 ParentLayerId = parentIdx >= 0 ? doc.Layers[parentIdx].Id : Guid.Empty,
             };
 
@@ -511,7 +595,7 @@ public class RhinoReceivePipeline
         return parentIdx;
     }
 
-    // ── Material/colour ───────────────────────────────────────────────────────
+    // -- Material/colour -----------------------------------------------------
 
     private static void ApplyMaterialColor(JObject geoObj, ObjectAttributes attrs)
     {
