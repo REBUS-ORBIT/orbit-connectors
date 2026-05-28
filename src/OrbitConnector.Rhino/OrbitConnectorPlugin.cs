@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using Rhino;
 using Rhino.PlugIns;
@@ -41,22 +42,147 @@ public class OrbitConnectorPlugin : PlugIn
 
     // Returns a System.Drawing.Icon version of orbit-logo.png for use as the
     // dockable-panel rail icon passed to Panels.RegisterPanel.
+    //
+    // v0.1.12: previous attempts (v0.1.9 .. v0.1.11) loaded the PNG via a
+    // single hard-coded manifest resource name and silently returned null
+    // on any failure -- the user then saw a blank rail icon with no clue
+    // why. We now:
+    //
+    //   1. Enumerate every manifest resource name first and log them to
+    //      load.log so the actual embedded name is always visible after
+    //      the next install. The name MSBuild assigns to
+    //      `Resources\orbit-logo.png` depends on the LogicalName scheme,
+    //      hyphen-vs-underscore policy, and root namespace; on some
+    //      Rhino+SDK combos it has been observed to land at
+    //      `OrbitConnector.Rhino.Resources.orbit_logo.png` (underscore)
+    //      rather than `orbit-logo.png` (hyphen). Logging removes the
+    //      guesswork.
+    //
+    //   2. Try multiple candidate names, then fall back to finding any
+    //      embedded PNG whose name ends in `logo.png` or contains
+    //      `orbit` (case-insensitive). This survives a renamed resource
+    //      and surfaces a clear log line either way.
+    //
+    //   3. Try the high-DPI `Icon.FromHandle(bitmap.GetHicon())` path
+    //      first; if that returns a non-valid icon (some Rhino host
+    //      combos), fall back to building an ICO container from the
+    //      raw PNG bytes and reading it with `new Icon(stream)`.
+    //
+    // Logging is appended to load.log so it survives plug-in reload.
     private static System.Drawing.Icon? LoadOrbitPanelIcon()
     {
         try
         {
             var asm = typeof(OrbitConnectorPlugin).Assembly;
-            using var stream = asm.GetManifestResourceStream(
-                "OrbitConnector.Rhino.Resources.orbit-logo.png");
-            if (stream == null) return null;
-            using var bmp    = new System.Drawing.Bitmap(stream);
-            using var scaled = new System.Drawing.Bitmap(bmp, 32, 32);
-            return System.Drawing.Icon.FromHandle(scaled.GetHicon());
-        }
-        catch
-        {
+            var names = asm.GetManifestResourceNames();
+            Log($"manifest resources: count={names.Length}");
+            foreach (var n in names) Log($"  resource: {n}");
+
+            var candidates = new[]
+            {
+                "OrbitConnector.Rhino.Resources.orbit-logo.png",
+                "OrbitConnector.Rhino.Resources.orbit_logo.png",
+            };
+
+            string? matchedName = candidates.FirstOrDefault(c =>
+                names.Any(n => string.Equals(n, c, StringComparison.Ordinal)));
+
+            if (matchedName == null)
+            {
+                // Last-ditch: any embedded PNG that looks like an
+                // ORBIT logo. Hand-pick the candidate so a future
+                // `Resources/dialog-bg.png` doesn't get picked up.
+                matchedName = names.FirstOrDefault(n =>
+                    n.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
+                    (n.IndexOf("orbit", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     n.IndexOf("logo",  StringComparison.OrdinalIgnoreCase) >= 0));
+            }
+
+            if (matchedName == null)
+            {
+                Log("icon load: no matching embedded PNG found");
+                return null;
+            }
+
+            Log($"icon load: using resource '{matchedName}'");
+
+            byte[] pngBytes;
+            using (var rs = asm.GetManifestResourceStream(matchedName))
+            {
+                if (rs == null) { Log("icon load: stream was null"); return null; }
+                using var ms = new MemoryStream();
+                rs.CopyTo(ms);
+                pngBytes = ms.ToArray();
+            }
+            Log($"icon load: PNG bytes={pngBytes.Length}");
+
+            // Pass 1: Bitmap.GetHicon round-trip.
+            try
+            {
+                using var bmpStream = new MemoryStream(pngBytes);
+                using var bmp = new System.Drawing.Bitmap(bmpStream);
+                using var scaled = new System.Drawing.Bitmap(bmp, 32, 32);
+                var icon = System.Drawing.Icon.FromHandle(scaled.GetHicon());
+                if (icon != null && icon.Width > 0 && icon.Height > 0)
+                {
+                    Log($"icon load: OK via Bitmap.GetHicon size={icon.Width}x{icon.Height}");
+                    return icon;
+                }
+                Log("icon load: Bitmap.GetHicon returned an empty icon, trying ICO fallback");
+            }
+            catch (Exception ex)
+            {
+                Log($"icon load: Bitmap.GetHicon THREW: {ex.GetType().Name}: {ex.Message}");
+            }
+
+            // Pass 2: Wrap the PNG bytes in an ICO container and read it
+            // with `new Icon(stream)`. Works around hosts where
+            // GetHicon's HICON handle doesn't survive the Icon.FromHandle
+            // round-trip (the icon is technically valid but Rhino's
+            // panel-rail renderer sees it as empty).
+            try
+            {
+                using var icoBytes = new MemoryStream();
+                WriteSinglePngIco(icoBytes, pngBytes, 32, 32);
+                icoBytes.Position = 0;
+                var icon = new System.Drawing.Icon(icoBytes);
+                Log($"icon load: OK via ICO fallback size={icon.Width}x{icon.Height}");
+                return icon;
+            }
+            catch (Exception ex)
+            {
+                Log($"icon load: ICO fallback THREW: {ex.GetType().Name}: {ex.Message}");
+            }
+
             return null;
         }
+        catch (Exception ex)
+        {
+            Log($"icon load: outer THREW: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Build a minimal ICO container holding a single PNG image entry.
+    // ICO format: 6-byte header + 16-byte directory entry + payload.
+    // Reference: https://learn.microsoft.com/en-us/previous-versions/ms997538(v=msdn.10)
+    private static void WriteSinglePngIco(Stream dst, byte[] pngBytes, int width, int height)
+    {
+        using var w = new BinaryWriter(dst, System.Text.Encoding.ASCII, leaveOpen: true);
+        // ICONDIR
+        w.Write((ushort)0);   // reserved
+        w.Write((ushort)1);   // type = 1 (icon)
+        w.Write((ushort)1);   // image count
+        // ICONDIRENTRY
+        w.Write((byte)(width  >= 256 ? 0 : width));
+        w.Write((byte)(height >= 256 ? 0 : height));
+        w.Write((byte)0);     // colour palette
+        w.Write((byte)0);     // reserved
+        w.Write((ushort)1);   // colour planes
+        w.Write((ushort)32);  // bits per pixel
+        w.Write((uint)pngBytes.Length);
+        w.Write((uint)(6 + 16)); // image offset (header + dir entry)
+        w.Write(pngBytes);
     }
 
     // ---- Diagnostic load log (v0.1.7) --------------------------------------

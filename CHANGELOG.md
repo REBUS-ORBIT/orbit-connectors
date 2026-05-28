@@ -11,6 +11,154 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.12 — Fix receive ("Root object has no elements") + panel logo (UI + rail icon)
+
+Two unrelated bugs reported on top of `v0.1.11` are addressed in one
+coordinated release so users don't have to install twice.
+
+### Bug 1: receive returned "Root object has no elements"
+
+**Symptom.** Pressing **Receive from ORBIT** on any model that had been
+pushed by any sender other than the connector itself returned
+`The root object has no elements. Nothing to receive.` and bailed
+before reaching the converter.
+
+**Root cause.** The v0.1.10 receive pipeline iterated only the root
+object's `elements` array and assumed every child reference was an
+inline reference stub directly under that property. That assumption is
+true for the connector's own send pipeline (which serialises a single
+top-level `OrbitObject` collection with a flat `elements: [layer*]`
+array) but breaks for every other ORBIT producer in the wild. PRISM,
+the Python and JS Speckle SDKs, the legacy 3DConvert pipeline, the
+visualiser staging payloads, and any Speckle-fork sender variously:
+
+- detach `elements` with the `@` prefix that the serialiser strips
+  to plain `elements`, but in a different shape than v0.1.10 expected;
+- nest geometry deeper under `displayValue` collections rather than
+  `elements`;
+- carry the user-visible geometry on proxies (`renderMaterialProxies`,
+  `groupProxies`, `definitionProxies`) attached to the root rather
+  than children of it;
+- wrap the meaningful geometry inside a `Speckle.Core.Models.Collection`
+  or `Objects.Other.Collections.Collection` discriminator that v0.1.10
+  didn't recognise as a collection at all.
+
+In every one of those shapes, `root.elements` was either empty or
+missing entirely, and the pipeline threw before the first leaf was
+even examined. The fix mirrors the strategy the PRISM visualiser
+orchestrator landed in commits
+[`50f8c39`](https://github.com/REBUS-ORBIT/prism/commit/50f8c39)
+and [`ad62e31`](https://github.com/REBUS-ORBIT/prism/commit/ad62e31)
+after the same class of bug hit it:
+
+1. **Resolve the version** via the GraphQL `project(id).model(id).versions`
+   query (no change — `OrbitClient.GetVersionsAsync` was already
+   correct, this just documents the live endpoint).
+2. **Fetch the root** via REST `GET /objects/{streamId}/{rootHash}/single`
+   (no change — `ServerTransport.GetObjectAsync` was already correct).
+3. **Walk the entire JSON tree** for `referencedId` stubs anywhere it
+   appears (not just under `elements`) and de-dupe + recursively fetch
+   every unique child. The closure size from `__closure` on the root
+   drives progress reporting; we never short-circuit before the whole
+   tree is in memory.
+4. **Traverse from the root** by collection-type detection:
+   `speckle_type` matches one of the known collection discriminators,
+   `collectionType` is set, OR a non-empty `elements` array is present
+   → descend with an extended `layerPath`. Anything else is a leaf and
+   goes through `OrbitToRhinoConverter`. Inherits the enclosing
+   layer/colour chain when a leaf doesn't set its own.
+
+For blob downloads: the connector's receive path doesn't fetch
+textures today, but when it does (future release) it must use
+`GET /api/stream/{streamId}/blob/{blobId}` — the only blob endpoint
+the live ORBIT server exposes. Per the same `ad62e31` finding, ORBIT
+blob ids are 10-char server-assigned strings, **not** SHA-256 content
+hashes, so any integrity check would always fail and must not be
+added on the receive path. The current upload side
+(`OrbitBlobUploader`) already uses this endpoint and reads back
+server ids; nothing changes there.
+
+| File | Change |
+|---|---|
+| `src/OrbitConnector.Rhino/Pipeline/RhinoReceivePipeline.cs` | Full rewrite. `FetchAllObjectsAsync` does the bounded BFS over all detached references; `TraverseAndBake` walks the resolved tree by collection-type detection; `BakeLeaf` applies layer/material/colour. RhinoApp diagnostic lines at every phase. |
+
+`OrbitToRhinoConverter.cs` and the SDK transport plumbing are
+unchanged — the JSON shape they expect already matched what the live
+ORBIT server returns.
+
+### Bug 2: ORBIT logo missing in the panel header AND on Rhino's panel rail tab
+
+**Symptom.** After v0.1.11 the in-panel header showed only the text
+`ORBIT` / `Connector`, and Rhino's panel-rail dock tab for the ORBIT
+panel kept rendering as a blank square instead of the logo.
+
+**In-panel UI logo.** Fixed by inlining the logo PNG as a base64
+data URI directly inside `UI/wwwroot/index.html`. The Eto `WebView`
+the panel uses can't reach assembly-embedded resources without a
+custom URI scheme, so any `<img src="orbit-logo.png">` would have
+silently 404'd. Inlining bypasses the WebView's resource resolution
+entirely and survives every load/reload path without configuration.
+The PNG is a 96 × 95 resize of `Resources/orbit-logo.png` (8.9 KB →
+12.0 KB base64); the in-header logo renders at 28 px height next to
+the existing `ORBIT` / `Connector` text and the version label.
+
+**Panel-rail icon.** The v0.1.11 loader hardcoded the manifest
+resource name `OrbitConnector.Rhino.Resources.orbit-logo.png` and
+silently returned `null` on any failure — leaving no clue why the
+icon was blank. The v0.1.12 loader:
+
+1. Enumerates **all** manifest resource names on every load and
+   appends them to `%LOCALAPPDATA%\OrbitConnector\load.log`. The
+   logical name MSBuild assigns to `Resources\orbit-logo.png` depends
+   on root namespace + hyphen-vs-underscore policy + CI vs local
+   build; in practice this varies between hosts and now the actual
+   name is always visible.
+2. Tries the expected name (`OrbitConnector.Rhino.Resources.orbit-logo.png`)
+   first, then a hyphen→underscore variant (`...orbit_logo.png`), then
+   falls back to any embedded `.png` whose name contains `orbit` or
+   `logo`. Logs the chosen candidate.
+3. Loads the icon via `Bitmap.GetHicon()`; if the resulting
+   `Icon.FromHandle(...)` is invalid (some Rhino + Eto combos return
+   an empty icon for the HICON round-trip), wraps the raw PNG bytes
+   in an in-memory ICO container and reads it with `new Icon(stream)`
+   instead. Logs whichever path succeeded.
+
+The log lines on a healthy load look like:
+
+```
+[hh:mm:ss.fff] manifest resources: count=N
+[hh:mm:ss.fff]   resource: OrbitConnector.Rhino.Resources.orbit-logo.png
+[hh:mm:ss.fff]   resource: OrbitConnector.Rhino.UI.wwwroot.index.html
+[hh:mm:ss.fff] icon load: using resource 'OrbitConnector.Rhino.Resources.orbit-logo.png'
+[hh:mm:ss.fff] icon load: PNG bytes=73527
+[hh:mm:ss.fff] icon load: OK via Bitmap.GetHicon size=32x32
+```
+
+Rhino may continue to display the previously-cached blank rail icon
+for one launch after install (the panel registration is memoised
+inside the host); a full Rhino restart picks the new icon up.
+
+| File | Change |
+|---|---|
+| `src/OrbitConnector.Rhino/OrbitConnectorPlugin.cs` | `LoadOrbitPanelIcon()` rewritten: enumerates + logs manifest resources, tries multiple candidate names, falls back to hand-built ICO container. New `WriteSinglePngIco` helper. |
+| `src/OrbitConnector.Rhino/UI/wwwroot/index.html` | Header restructured: new `#header-left` flex row carries an `<img id="header-logo">` with the inline base64 logo plus the existing `#wordmark` / `#header-sub` text; `#header-right` (version + check-for-updates link) is unchanged. CSS adds `#header-logo { height: 28px; width: auto; }` and `#header-left { display:flex; align-items:center; gap:8px; }`. |
+
+### What is **not** changed
+
+- The v0.1.11 plug-in metadata (`PlugInDescription` Organization /
+  Email / Website / Icon attributes), the v0.1.10 send pipeline,
+  the WebView panel UI scaffolding, the v0.1.2 / v0.1.8 update-check
+  link, the diagnostic `load.log` writer, and every installer
+  registry / path behaviour from v0.1.5 onwards.
+- `OrbitToRhinoConverter.cs` — the JSON shape it dispatches on is
+  already the live wire format the rewritten receive pipeline feeds
+  it.
+- The SDK (`vendor/SDK/`) — no transport-level changes needed; the
+  bug was entirely in the connector's tree-walk logic.
+- Inno Setup script and YAK manifest.
+
+---
+
 ## v0.1.11 — Combined release: v0.1.9 metadata + v0.1.10 receive (regression fix)
 
 A tidy-up release. The `feat/receive-from-orbit` branch that became
