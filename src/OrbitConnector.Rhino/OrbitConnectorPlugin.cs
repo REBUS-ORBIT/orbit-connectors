@@ -27,6 +27,58 @@ public class OrbitConnectorPlugin : PlugIn
     // baked into the assembly via AssemblyInformationalVersionAttribute.
     public static new string Version { get; } = ResolveVersion();
 
+    // ---- Publisher / contact info ------------------------------------------
+    public override string Email   => "IT@rebus.industries";
+    public override string Website => "https://rebus.industries";
+
+    // ---- Plugin Manager icon (Rhino Options → Plug-ins) --------------------
+    //
+    // Loaded once from the embedded Resources/orbit-logo.png manifest resource
+    // and cached. The null-on-failure path is intentional: Rhino shows a
+    // generic icon when Icon returns null, which is preferable to crashing.
+    //
+    // System.Drawing.Icon is referenced here safely because:
+    //   1. The csproj already references System.Drawing.Common for compile-time
+    //      resolution of Panels.RegisterPanel's Icon parameter.
+    //   2. System.Drawing.Common is NOT bundled with the plug-in payload
+    //      (ExcludeAssets="runtime" PrivateAssets="all") — Rhino's shared
+    //      Microsoft.WindowsDesktop.App framework provides it at runtime.
+    // This is the same binding-safe pattern the Panels.RegisterPanel call uses.
+    //
+    private static System.Drawing.Icon? _pluginIcon;
+    private static bool                 _pluginIconLoaded;
+
+    public override System.Drawing.Icon Icon
+    {
+        get
+        {
+            if (!_pluginIconLoaded)
+            {
+                _pluginIconLoaded = true;
+                _pluginIcon = LoadOrbitIcon();
+            }
+            return _pluginIcon ?? base.Icon;
+        }
+    }
+
+    private static System.Drawing.Icon? LoadOrbitIcon()
+    {
+        try
+        {
+            var asm = typeof(OrbitConnectorPlugin).Assembly;
+            using var stream = asm.GetManifestResourceStream(
+                "OrbitConnector.Rhino.Resources.orbit-logo.png");
+            if (stream == null) return null;
+            using var bmp    = new System.Drawing.Bitmap(stream);
+            using var scaled = new System.Drawing.Bitmap(bmp, 32, 32);
+            return System.Drawing.Icon.FromHandle(scaled.GetHicon());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     // ---- Diagnostic load log (v0.1.7) --------------------------------------
     //
     // The v0.1.0-v0.1.6 "initialization failed" regression silently broke the
@@ -107,7 +159,7 @@ public class OrbitConnectorPlugin : PlugIn
                 this,
                 typeof(UI.OrbitEtoPanel),
                 "ORBIT",
-                null);
+                Icon);
             Log("panel registered");
 
             RhinoDoc.BeginOpenDocument   += OnDocumentOpen;

@@ -11,6 +11,61 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.9 — Plugin branding: ORBIT logo and publisher metadata
+
+Populates the fields shown in Rhino's **Options → Plug-ins** list and
+wires the ORBIT logo as the plug-in icon.
+
+### Publisher metadata
+
+Three new `[assembly: PlugInDescription(...)]` attributes in
+`Properties/AssemblyInfo.cs` fill in the Rhino Plugin Manager's
+contact fields:
+
+| Field | Value |
+|---|---|
+| Organization / Publisher | REBUS Industries |
+| Email | IT@rebus.industries |
+| Website | https://rebus.industries |
+
+`OrbitConnectorPlugin` also overrides the `Email` and `Website`
+virtual properties so the same values are returned when Rhino queries
+the plug-in programmatically.
+
+The csproj `<Authors>` / `<Company>` fields are updated from
+`REBUS-ORBIT` to `REBUS Industries` so the assembly-level company
+attribute aligns with the above.
+
+### ORBIT logo
+
+The embedded `Resources/orbit-logo.png` (shipped since v0.1.2) is now
+wired to two Rhino icon surfaces:
+
+1. **Plugin Manager icon** — `OrbitConnectorPlugin.Icon` is overridden
+   to load the PNG from the manifest resource, scale it to 32 × 32,
+   and return a `System.Drawing.Icon`. The icon is loaded once and
+   cached; failure falls back to Rhino's default (generic icon), so
+   a missing or corrupt resource cannot break plug-in load.
+
+2. **Panel rail icon** — `Panels.RegisterPanel` is updated to pass the
+   same icon so the ORBIT panel tab in Rhino's side dock shows the
+   logo instead of a blank square.
+
+The `[assembly: PlugInDescription(DescriptionType.Icon, "OrbitConnector.Rhino.Resources.orbit-logo.png")]`
+attribute is also added so Rhino's scanner can surface the icon before
+the plug-in is fully loaded.
+
+### Safety note on `System.Drawing`
+
+The `System.Drawing.Icon` type is already referenced in our assembly's
+metadata via the existing `Panels.RegisterPanel(…, Icon)` call (added
+in v0.1.7). Adding the `Icon` property override does not introduce a
+new assembly dependency. The csproj continues to use
+`ExcludeAssets="runtime" PrivateAssets="all"` on
+`System.Drawing.Common` so the DLL is never bundled alongside the
+`.rhp` — Rhino's shared `Microsoft.WindowsDesktop.App` framework
+provides it at runtime, the same as before.
+
 ## v0.1.8 — Restore full Rhino panel functionality (regression fix)
 
 **v0.1.7 made the plug-in load again, but the panel content itself was a

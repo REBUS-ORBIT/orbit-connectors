@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Rhino.PlugIns;
 
 // -----------------------------------------------------------------------------
 // Rhino plug-in identity GUID -- stable across releases.
@@ -15,3 +16,13 @@ using System.Runtime.InteropServices;
 // Do not regenerate. Same constraint as PRISM agent's plug-in id.
 // -----------------------------------------------------------------------------
 [assembly: Guid("4F3A2B1C-8E5D-4A9F-B6C2-1D7E3F4A5B6C")]
+
+// -----------------------------------------------------------------------------
+// Rhino Plugin Manager contact / branding metadata.
+// These attributes populate the "Publisher", "Email", "Website", and icon
+// fields shown in Rhino's Options → Plug-ins list.
+// -----------------------------------------------------------------------------
+[assembly: PlugInDescription(DescriptionType.Organization, "REBUS Industries")]
+[assembly: PlugInDescription(DescriptionType.Email,        "IT@rebus.industries")]
+[assembly: PlugInDescription(DescriptionType.WebSite,      "https://rebus.industries")]
+[assembly: PlugInDescription(DescriptionType.Icon,         "OrbitConnector.Rhino.Resources.orbit-logo.png")]

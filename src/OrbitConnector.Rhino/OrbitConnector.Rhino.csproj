@@ -11,7 +11,8 @@
       connectors). Do not set <Version> / <AssemblyVersion> / <FileVersion>
       here; bump $(OrbitConnectorVersion) in Directory.Build.props instead.
     -->
-    <Authors>REBUS-ORBIT</Authors>
+    <Authors>REBUS Industries</Authors>
+    <Company>REBUS Industries</Company>
     <Description>ORBIT Connector for Rhino 8</Description>
     <OutputType>Library</OutputType>
     <!--
