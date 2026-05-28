@@ -50,29 +50,14 @@ public class ServerTransport : IOrbitTransport
         int batchBytes = 0;
         int total = 0;
 
-        int batchIndex = 0;
-
         async Task FlushAsync()
         {
             if (batch.Count == 0) return;
-            batchIndex++;
             var payload = "[" + string.Join(",", batch.Select(o => o.json)) + "]";
-
-            // Speckle server parses multipart via busboy's 'file' event — the batch must be
-            // sent as a file attachment (with filename), not a plain text form field.
-            using var form       = new MultipartFormDataContent();
-            var batchContent     = new ByteArrayContent(Encoding.UTF8.GetBytes(payload));
-            batchContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            form.Add(batchContent, $"batch{batchIndex}", $"batch{batchIndex}");
-
+            var content = new StringContent(payload, Encoding.UTF8, "application/json");
             var url = $"{_serverUrl}/objects/{_streamId}";
-            var response = await _http.PostAsync(url, form, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                var body = await response.Content.ReadAsStringAsync(ct);
-                throw new HttpRequestException(
-                    $"Object upload failed ({(int)response.StatusCode}): {body}");
-            }
+            var response = await _http.PostAsync(url, content, ct);
+            response.EnsureSuccessStatusCode();
             total += batch.Count;
             progress?.Report(total);
             batch.Clear();

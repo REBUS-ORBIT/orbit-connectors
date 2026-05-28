@@ -12,9 +12,13 @@ public class OrbitClient
     private readonly OrbitGraphQLClient _gql;
     public string ServerUrl { get; }
 
+    /// <summary>The bearer token used for authentication against the ORBIT server.</summary>
+    public string AuthToken { get; }
+
     public OrbitClient(string serverUrl, string authToken)
     {
         ServerUrl = serverUrl.TrimEnd('/');
+        AuthToken = authToken;
         _gql = new OrbitGraphQLClient(ServerUrl, authToken);
     }
 
@@ -60,6 +64,6 @@ public class OrbitClient
         int totalChildrenCount = 0,
         CancellationToken ct = default) =>
         _gql.MutateAsync<OrbitVersion>(OrbitQueries.CreateVersion,
-            "versionMutations.create", ct,
+            "modelMutations.create", ct,
             new { input = new { projectId, modelId, objectId, message, sourceApplication, totalChildrenCount } });
 }

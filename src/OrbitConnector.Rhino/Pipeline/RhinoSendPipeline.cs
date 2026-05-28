@@ -3,9 +3,11 @@ using Rhino.Geometry;
 using Rhino.DocObjects;
 using Orbit.Objects.Base;
 using Orbit.Objects.BuiltElements;
+using Orbit.Objects.Data;
 using Orbit.Sdk.Serialisation;
 using OrbitPoint  = Orbit.Objects.Geometry.Point;
 using OrbitVector = Orbit.Objects.Geometry.Vector;
+using OM          = Orbit.Objects.Geometry;
 using Orbit.Sdk.Transport;
 using Orbit.Sdk.Api;
 using OrbitConnector.Rhino.Converters;
@@ -26,11 +28,22 @@ public class RhinoSendPipeline
 
     public RhinoSendPipeline()
     {
+        // Order matters: first matching converter wins. Most-specific types
+        // before generic ones (e.g. Extrusion before Brep would matter if
+        // Extrusion derived from Brep — it does not, but the order is still
+        // chosen for clarity).
         _converters = new List<IRhinoToOrbitConverter>
         {
             new RhinoMeshConverter(),
+            new RhinoSurfaceConverter(),
             new RhinoBrepConverter(),
-            // TODO: add curve, point, instance, text converters as built
+            new RhinoExtrusionConverter(),
+            new RhinoSubDConverter(),
+            new RhinoCurveConverter(),
+            new RhinoPointConverter(),
+            new RhinoPointCloudConverter(),
+            new RhinoTextConverter(),
+            new RhinoInstanceConverter(),
         };
     }
 
@@ -61,6 +74,25 @@ public class RhinoSendPipeline
         var root = BuildObjectTree(rhinoObjects, doc, context, card);
         var totalConverted = root.Elements?.Sum(e => (e as OrbitObject)?.Elements?.Count ?? 0) ?? 0;
         progress?.Report(($"Converted {totalConverted} objects, serialising…", 35));
+
+        // 2.5 UPLOAD TEXTURE BLOBS + PATCH PLACEHOLDERS
+        // The converters left `@blob:SHA256HEX` placeholders on every textured
+        // RenderMaterial and collected the on-disk file paths in
+        // context.PendingBlobFiles. We must upload the blobs to the ORBIT
+        // server BEFORE serialising — the server returns short blob ids that
+        // get swapped into the placeholders, after which content-hash ids are
+        // computed over the final (patched) JSON. Skipping this leaves
+        // `@blob:HASH` strings in the wire data and the viewer cannot resolve
+        // them to image URLs (objects render with their fallback diffuse,
+        // which is black for textured materials by design).
+        if (context.PendingBlobFiles.Count > 0)
+        {
+            progress?.Report(($"Uploading {context.PendingBlobFiles.Count} texture(s)…", 36));
+            using var blobUploader = new OrbitBlobUploader(
+                client.ServerUrl, card.ProjectId!, client.AuthToken);
+            var hashToServerId = await blobUploader.UploadAsync(context.PendingBlobFiles, ct);
+            TextureBlobPatcher.Patch(root, hashToServerId);
+        }
 
         // 3. SERIALISE
         progress?.Report(("Serialising…", 40));
@@ -102,12 +134,13 @@ public class RhinoSendPipeline
         // Use ObjectEnumeratorSettings — the correct Rhino API for filtering doc objects
         var settings = new ObjectEnumeratorSettings()
         {
-            NormalObjects     = true,
-            LockedObjects     = false,
-            HiddenObjects     = false,
-            DeletedObjects    = false,
-            IncludeLights     = false,
-            IncludeGrips      = false,
+            NormalObjects            = true,
+            LockedObjects            = false,
+            HiddenObjects            = false,
+            DeletedObjects           = false,
+            IncludeLights            = false,
+            IncludeGrips             = false,
+            IncludePhantoms          = false,
         };
 
         var allNormal = doc.Objects.GetObjectList(settings)
@@ -168,29 +201,65 @@ public class RhinoSendPipeline
 
             foreach (var obj in group)
             {
-                var converted = ConvertWithFallback(obj.Geometry!, context);
+                // Pin the parent RhinoObject onto the context so converters
+                // can read material/colour off the object's attributes.
+                context.CurrentObject = obj;
+
+                var converted = ConvertWithFallback(obj, context);
+                context.CurrentObject = null;
                 if (converted == null) continue;
+
                 converted.ApplicationId = obj.Id.ToString();
+                TagWithLayerInfo(converted, layer.FullPath, layerColor);
 
-                // Tag every leaf with its layer info so the viewer can colour it.
-                // Done via the dynamic-properties indexer so this works for any OrbitBase
-                // (Mesh, Brep, future curve/point types) without N specific setters.
-                converted["layerPath"]   = layer.FullPath;
-                converted["layerColor"]  = layerColor;
-                converted["colorSource"] = "layer";
-
-                layerCollection.Elements.Add(converted);
+                // Block instance flattening — the user wants each block member
+                // to appear as a direct sibling under its layer, NOT nested
+                // inside an intermediate "Block 01" tree node. The Instance
+                // converter already pre-transforms members into the placement
+                // position (so geometry is identical either way) and stores
+                // them on Instance.Elements. We unpack those here so the layer
+                // tree shows:
+                //   Block (layer)
+                //   ├── Extrusion (member 1)
+                //   ├── Extrusion (member 2)
+                //   └── …
+                // instead of
+                //   Block (layer)
+                //   └── Block 01 (instance-as-collection)
+                //       ├── Extrusion …
+                if (converted is OM.Instance inst && inst.Elements is { Count: > 0 } members)
+                {
+                    foreach (var member in members)
+                    {
+                        // Members inherit the layer's path/colour for the
+                        // sidebar (they no longer have an instance parent to
+                        // group them). Their own renderMaterial / per-mesh
+                        // layer colour set inside the wrapper is unchanged.
+                        TagWithLayerInfo(member, layer.FullPath, layerColor);
+                        layerCollection.Elements.Add(member);
+                    }
+                    // Drop the Instance wrapper itself — round-trip metadata
+                    // (definitionId / transform) lives on the
+                    // DefinitionProxies + a future InstanceProxy collection
+                    // that ships separately when block round-trip is wired.
+                }
+                else
+                {
+                    layerCollection.Elements.Add(converted);
+                }
             }
 
             if (layerCollection.Elements.Count > 0)
                 root.Elements.Add(layerCollection);
         }
 
-        // Attach proxies at root (kept for future use by bake/receive)
-        if (context.MaterialProxies.Count   > 0) root["renderMaterialProxies"] = context.MaterialProxies;
-        if (context.ColorProxies.Count      > 0) root["colorProxies"]          = context.ColorProxies;
-        if (context.GroupProxies.Count      > 0) root["groupProxies"]          = context.GroupProxies;
-        if (context.DefinitionProxies.Count > 0) root["definitionProxies"]     = context.DefinitionProxies;
+        // Attach proxies as detached root properties. Inline definition
+        // geometry is traversable by the viewer and shows up as duplicate
+        // block contents; detached proxies remain available for receive.
+        if (context.MaterialProxies.Count   > 0) root.RenderMaterialProxies = context.MaterialProxies;
+        if (context.ColorProxies.Count      > 0) root.ColorProxies          = context.ColorProxies;
+        if (context.GroupProxies.Count      > 0) root.GroupProxies          = context.GroupProxies;
+        if (context.DefinitionProxies.Count > 0) root.DefinitionProxies     = context.DefinitionProxies;
 
         // Named views — stored INLINE under `views` (no @ prefix). The full View3D objects
         // sit directly in the root JSON, matching the working Speckle reference.
@@ -263,20 +332,144 @@ public class RhinoSendPipeline
     /// </summary>
     private static long ArgbToUnsignedLong(int argb) => (long)(uint)argb;
 
-    private OrbitBase? ConvertWithFallback(GeometryBase geometry, ConversionContext context)
+    /// <summary>
+    /// Set <c>layerPath</c>, <c>layerColor</c>, and <c>colorSource</c> on a
+    /// converted leaf. <see cref="OM.Mesh"/> and <see cref="OM.Brep"/> have
+    /// these as typed properties — set those directly to avoid emitting
+    /// duplicate keys via <see cref="OrbitBase.DynamicProperties"/>. For all
+    /// other ORBIT types we write through the dynamic indexer so the wire
+    /// JSON shape is identical.
+    /// </summary>
+    private static void TagWithLayerInfo(OrbitBase converted, string layerPath, long layerColor)
     {
-        try
+        switch (converted)
         {
-            var converter = _converters.FirstOrDefault(c => c.CanConvert(geometry));
-            return converter != null
+            case RhinoDataObject wrapper:
+                // The wrapper itself stays clean (matches the Speckle Rhino8
+                // reference), but its display-mesh fragments need layer info —
+                // the viewer renders THOSE and falls back to a black diffuse
+                // when `colorSource: layer` is set with no `layerColor`.
+                if (wrapper.DisplayValue != null)
+                {
+                    foreach (var dv in wrapper.DisplayValue)
+                    {
+                        dv.LayerPath    = layerPath;
+                        dv.LayerColor   = layerColor;
+                        dv.ColorSource ??= "layer";
+                    }
+                }
+                break;
+
+            case OM.Mesh mesh:
+                mesh.LayerPath  = layerPath;
+                mesh.LayerColor = layerColor;
+                mesh.ColorSource ??= "layer";
+                break;
+
+            case OM.Brep brep:
+                brep.LayerPath  = layerPath;
+                brep.LayerColor = layerColor;
+                brep.ColorSource ??= "layer";
+                break;
+
+            default:
+                converted["layerPath"]   = layerPath;
+                converted["layerColor"]  = layerColor;
+                if (converted["colorSource"] == null)
+                    converted["colorSource"] = "layer";
+                break;
+        }
+    }
+
+    private OrbitBase? ConvertWithFallback(RhinoObject rhinoObj, ConversionContext context)
+    {
+        var geometry = rhinoObj.Geometry;
+        if (geometry == null)
+        {
+            RhinoApp.WriteLine($"[ORBIT] skipped {rhinoObj.Id}: no geometry");
+            return null;
+        }
+
+        string? lastReason = null;
+
+        OrbitBase? TryConvert(Func<OrbitBase> fn, string stage)
+        {
+            try
+            {
+                return fn();
+            }
+            catch (Exception ex)
+            {
+                lastReason = $"{stage}: {ex.Message}";
+                return null;
+            }
+        }
+
+        var converter = _converters.FirstOrDefault(c => c.CanConvert(geometry));
+        var primary = TryConvert(
+            () => converter != null
                 ? converter.Convert(geometry, context)
-                : _fallback.Convert(geometry, context);
-        }
-        catch
+                : _fallback.Convert(geometry, context),
+            converter?.GetType().Name ?? "RhinoFallbackConverter");
+
+        if (primary != null)
+            return primary;
+
+        var fallbackMesh = TryConvert(
+            () => _fallback.Convert(geometry, context),
+            "RhinoFallbackConverter");
+
+        if (fallbackMesh != null)
+            return fallbackMesh;
+
+        var extracted = RhinoObjectMeshes.ExtractFromObject(rhinoObj, context);
+        if (extracted.Count > 0)
         {
-            // If primary converter throws, try fallback
-            try { return _fallback.Convert(geometry, context); }
-            catch { return null; }
+            var meshConverter = new RhinoMeshConverter();
+            var orbitMeshes = extracted
+                .Select(m => meshConverter.Convert(m, context))
+                .Cast<OrbitBase>()
+                .ToList();
+
+            if (orbitMeshes.Count == 1)
+                return orbitMeshes[0];
+
+            return new OrbitObject
+            {
+                DisplayValue = orbitMeshes,
+            };
         }
+
+        if (geometry is Curve curve)
+        {
+            var curveConverter = new RhinoCurveConverter();
+            var curveObj = TryConvert(
+                () => curveConverter.Convert(geometry, context),
+                "RhinoCurveConverter");
+            if (curveObj != null)
+                return curveObj;
+        }
+
+        if (geometry is Surface surface)
+        {
+            var surfaceConverter = new RhinoSurfaceConverter();
+            var surfaceObj = TryConvert(
+                () => surfaceConverter.Convert(surface, context),
+                "RhinoSurfaceConverter");
+            if (surfaceObj != null)
+                return surfaceObj;
+        }
+
+        var bboxMesh = RhinoObjectMeshes.BoundingBoxMesh(geometry);
+        if (bboxMesh != null)
+        {
+            RhinoApp.WriteLine(
+                $"[ORBIT] warning {rhinoObj.Id}: using bounding-box placeholder ({lastReason ?? "no mesh"})");
+            return new RhinoMeshConverter().Convert(bboxMesh, context);
+        }
+
+        RhinoApp.WriteLine(
+            $"[ORBIT] skipped {rhinoObj.Id}: {lastReason ?? "no conversion path"}");
+        return null;
     }
 }

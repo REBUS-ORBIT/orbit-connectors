@@ -25,6 +25,19 @@ public class Instance : Base.OrbitBase
     [JsonProperty("units")]
     public string? Units { get; set; }
 
+    /// <summary>Display name of the block placement (from Rhino object name or definition name).</summary>
+    [JsonProperty("name")]
+    public string? Name { get; set; }
+
+    /// <summary>
+    /// Pre-transformed member geometry. Each entry is an <see cref="Base.OrbitBase"/>
+    /// (Brep, Extrusion, Mesh, Curve, …) positioned in world-space for this placement.
+    /// Populated by the send pipeline so the viewer can render the block without
+    /// needing to resolve the <see cref="DefinitionId"/> reference.
+    /// </summary>
+    [JsonProperty("elements")]
+    public List<Base.OrbitBase>? Elements { get; set; }
+
     /// <summary>Mesh display fallback for this instance placement.</summary>
     [JsonProperty("displayValue")]
     public List<Mesh>? DisplayValue { get; set; }

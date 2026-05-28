@@ -9,8 +9,6 @@ namespace Orbit.Objects.Geometry;
 /// </summary>
 public class Brep : Base.OrbitBase
 {
-    public override string OrbitType => "Objects.Geometry.Brep";
-
     /// <summary>
     /// Encoded Brep data. Format is host-application dependent.
     /// For Rhino: base64-encoded .3dm Brep serialisation.
@@ -44,15 +42,9 @@ public class Brep : Base.OrbitBase
     [JsonProperty("displayValue")]
     public List<Mesh>? DisplayValue { get; set; }
 
-    /// <summary>Full Rhino layer path of the source object.</summary>
-    [JsonProperty("layerPath")]
-    public string? LayerPath { get; set; }
+    // ── Layer / colour metadata ────────────────────────────────────────────────
 
-    /// <summary>Rhino layer colour as unsigned ARGB packed into a long.</summary>
-    [JsonProperty("layerColor")]
-    public long? LayerColor { get; set; }
-
-    /// <summary>Colour source: <c>"layer"</c> or <c>"object"</c>.</summary>
-    [JsonProperty("colorSource")]
-    public string? ColorSource { get; set; }
+    [JsonProperty("layerPath")]   public string? LayerPath   { get; set; }
+    [JsonProperty("layerColor")]  public long?   LayerColor  { get; set; }
+    [JsonProperty("colorSource")] public string? ColorSource { get; set; }
 }
