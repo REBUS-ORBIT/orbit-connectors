@@ -27,41 +27,38 @@ public class OrbitConnectorPlugin : PlugIn
     // baked into the assembly via AssemblyInformationalVersionAttribute.
     public static new string Version { get; } = ResolveVersion();
 
-    // ---- Publisher / contact info ------------------------------------------
-    public override string Email   => "IT@rebus.industries";
-    public override string Website => "https://rebus.industries";
-
     // ---- Plugin Manager icon (Rhino Options → Plug-ins) --------------------
     //
-    // Loaded once from the embedded Resources/orbit-logo.png manifest resource
-    // and cached. The null-on-failure path is intentional: Rhino shows a
-    // generic icon when Icon returns null, which is preferable to crashing.
+    // RhinoCommon 8 exposes PlugIn.Icon as a *method* Icon(Size) returning
+    // Bitmap (not a property). We override it to serve orbit-logo.png at
+    // whatever size Rhino requests. Null-on-failure: Rhino shows its default.
     //
-    // System.Drawing.Icon is referenced here safely because:
-    //   1. The csproj already references System.Drawing.Common for compile-time
-    //      resolution of Panels.RegisterPanel's Icon parameter.
-    //   2. System.Drawing.Common is NOT bundled with the plug-in payload
-    //      (ExcludeAssets="runtime" PrivateAssets="all") — Rhino's shared
-    //      Microsoft.WindowsDesktop.App framework provides it at runtime.
-    // This is the same binding-safe pattern the Panels.RegisterPanel call uses.
+    // System.Drawing types are referenced safely here — the csproj already
+    // pulls in System.Drawing.Common for compile-time resolution of the
+    // Panels.RegisterPanel overload, and the DLL is NOT bundled with the
+    // payload (ExcludeAssets="runtime" PrivateAssets="all"), so Rhino's own
+    // shared framework supplies it at runtime without any ALC conflict.
     //
-    private static System.Drawing.Icon? _pluginIcon;
-    private static bool                 _pluginIconLoaded;
-
-    public override System.Drawing.Icon Icon
+    public override System.Drawing.Bitmap Icon(System.Drawing.Size size)
     {
-        get
+        try
         {
-            if (!_pluginIconLoaded)
-            {
-                _pluginIconLoaded = true;
-                _pluginIcon = LoadOrbitIcon();
-            }
-            return _pluginIcon ?? base.Icon;
+            var asm = typeof(OrbitConnectorPlugin).Assembly;
+            using var stream = asm.GetManifestResourceStream(
+                "OrbitConnector.Rhino.Resources.orbit-logo.png");
+            if (stream == null) return null!;
+            using var bmp = new System.Drawing.Bitmap(stream);
+            return new System.Drawing.Bitmap(bmp, size);
+        }
+        catch
+        {
+            return null!;
         }
     }
 
-    private static System.Drawing.Icon? LoadOrbitIcon()
+    // Returns a System.Drawing.Icon version of the logo for use as the
+    // dockable-panel rail icon in Panels.RegisterPanel.
+    private static System.Drawing.Icon? LoadOrbitPanelIcon()
     {
         try
         {
@@ -159,7 +156,7 @@ public class OrbitConnectorPlugin : PlugIn
                 this,
                 typeof(UI.OrbitEtoPanel),
                 "ORBIT",
-                Icon);
+                LoadOrbitPanelIcon());
             Log("panel registered");
 
             RhinoDoc.BeginOpenDocument   += OnDocumentOpen;
