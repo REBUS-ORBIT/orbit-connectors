@@ -7,15 +7,27 @@ using Orbit.Objects.Base;
 namespace Orbit.Sdk.Serialisation;
 
 /// <summary>
-/// Serialises an ORBIT object tree to JSON, computing deterministic SHA-256 content
-/// hashes for each object and building the __closure table on the root.
+/// Serialises an ORBIT object tree to JSON, computing deterministic MD5 content
+/// hashes for each object (matching the Speckle server's 32-char object ID format)
+/// and building the <c>__closure</c> table on the root.
 ///
-/// Detachment: objects above <see cref="DetachThresholdBytes"/> are stored as separate
-/// objects and replaced in the parent with a reference token { "referencedId": "..." }.
+/// Detachment is property-name driven, exactly as Speckle does it:
+///   <list type="bullet">
+///     <item>A property named with a leading <c>@</c> (e.g. <c>@elements</c>) is DETACHED:
+///       each <c>speckle_type</c>'d child becomes its own DB row and is replaced inline
+///       with a stub <c>{ "referencedId": "...", "speckle_type": "reference" }</c>.</item>
+///     <item>A property without the <c>@</c> prefix (e.g. <c>views</c>, <c>origin</c>,
+///       <c>renderMaterial</c>) is INLINE: the child stays inside the parent's JSON. Inline
+///       objects still get an <c>id</c> field (MD5 of their content), but they are NOT added
+///       to the closure table.</item>
+///   </list>
 /// </summary>
 public class OrbitSerializer
 {
-    /// <summary>Objects larger than this (serialised bytes) are stored separately.</summary>
+    /// <summary>
+    /// Reserved. Kept for backward compatibility — current detach logic is purely
+    /// property-name driven (the <c>@</c> prefix), not size-based.
+    /// </summary>
     public int DetachThresholdBytes { get; set; } = 1024;
 
     private readonly Dictionary<string, string> _serialisedObjects = new();
@@ -23,8 +35,9 @@ public class OrbitSerializer
 
     /// <summary>
     /// Serialise the root object and all descendants.
-    /// Returns a dictionary of { id → json } for all objects (root + detached children).
-    /// The root object will have its __closure populated.
+    /// Returns a dictionary of { id → json } for the root plus every detached descendant.
+    /// Each stored JSON blob includes its own <c>id</c> field. The root object's
+    /// <see cref="OrbitBase.Id"/> is set before returning.
     /// </summary>
     public async Task<Dictionary<string, string>> SerialiseAsync(
         OrbitBase root,
@@ -33,77 +46,80 @@ public class OrbitSerializer
         _serialisedObjects.Clear();
         _closure.Clear();
 
-        await SerialiseObjectAsync(root, depth: 0, ct);
+        var rootJObj = JObject.FromObject(root, JsonSerializer.Create(OrbitJsonSettings.Default));
+        await ProcessNodeAsync(rootJObj, currentDetachDepth: 0, parentIsDetached: false, ct);
 
-        // Attach closure to root
-        root.Closure = new Dictionary<string, int>(_closure);
-
-        // Re-serialise root now that closure is set
-        var rootJson = JsonConvert.SerializeObject(root, OrbitJsonSettings.Default);
-        var rootId = ComputeHash(rootJson);
+        rootJObj["__closure"] = JToken.FromObject(_closure);
+        rootJObj.Remove("id");
+        var rootId = ComputeHash(rootJObj.ToString(Formatting.None));
         root.Id = rootId;
-        _serialisedObjects[rootId] = rootJson;
+        rootJObj["id"] = rootId;
 
+        _serialisedObjects[rootId] = rootJObj.ToString(Formatting.None);
         return new Dictionary<string, string>(_serialisedObjects);
     }
 
-    private async Task<string> SerialiseObjectAsync(OrbitBase obj, int depth, CancellationToken ct)
+    /// <summary>
+    /// Depth-first walk. <paramref name="parentIsDetached"/> tells us whether the current
+    /// node lives directly inside a property whose name starts with <c>@</c> — only then
+    /// does a <c>speckle_type</c>'d object get extracted into its own DB row.
+    /// </summary>
+    private async Task ProcessNodeAsync(
+        JToken token,
+        int currentDetachDepth,
+        bool parentIsDetached,
+        CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        // Walk all JObject properties to find nested OrbitBase instances
-        var jObj = JObject.FromObject(obj, JsonSerializer.Create(OrbitJsonSettings.Default));
-        await WalkAndDetachAsync(jObj, depth + 1, ct);
-
-        var json = jObj.ToString(Formatting.None);
-        var id = ComputeHash(json);
-        obj.Id = id;
-
-        // Register in closure at this depth
-        _closure[id] = depth;
-        _serialisedObjects[id] = json;
-
-        return id;
-    }
-
-    private async Task WalkAndDetachAsync(JToken token, int depth, CancellationToken ct)
-    {
         if (token is JObject jObj)
         {
-            // Check if this looks like a nested OrbitBase
-            if (jObj.ContainsKey("speckle_type") && !jObj.ContainsKey("referencedId"))
+            foreach (var prop in jObj.Properties().ToList())
             {
-                var nestedJson = jObj.ToString(Formatting.None);
-                if (nestedJson.Length > DetachThresholdBytes)
-                {
-                    var nestedId = ComputeHash(nestedJson);
-                    _closure[nestedId] = depth;
-                    _serialisedObjects[nestedId] = nestedJson;
-
-                    // Replace in-place with reference
-                    jObj.RemoveAll();
-                    jObj["referencedId"] = nestedId;
-                    return;
-                }
+                bool childIsDetached = prop.Name.StartsWith("@");
+                int childDepth = childIsDetached ? currentDetachDepth + 1 : currentDetachDepth;
+                await ProcessNodeAsync(prop.Value, childDepth, childIsDetached, ct);
             }
 
-            foreach (var prop in jObj.Properties().ToList())
-                await WalkAndDetachAsync(prop.Value, depth, ct);
+            if (jObj.ContainsKey("speckle_type") && !jObj.ContainsKey("referencedId"))
+            {
+                var forHash = (JObject)jObj.DeepClone();
+                forHash.Remove("id");
+                var id = ComputeHash(forHash.ToString(Formatting.None));
+
+                if (parentIsDetached && currentDetachDepth > 0)
+                {
+                    forHash["id"] = id;
+                    _serialisedObjects[id] = forHash.ToString(Formatting.None);
+                    _closure[id] = currentDetachDepth;
+
+                    jObj.RemoveAll();
+                    jObj["referencedId"] = id;
+                    jObj["speckle_type"] = "reference";
+                }
+                else
+                {
+                    jObj["id"] = id;
+                }
+            }
         }
         else if (token is JArray jArr)
         {
             foreach (var item in jArr)
-                await WalkAndDetachAsync(item, depth, ct);
+                await ProcessNodeAsync(item, currentDetachDepth, parentIsDetached, ct);
         }
 
         await Task.CompletedTask;
     }
 
-    /// <summary>Compute a deterministic SHA-256 hex hash of a JSON string.</summary>
+    /// <summary>
+    /// Compute a deterministic MD5 hex hash of a JSON string.
+    /// Matches the Speckle server's 32-character object ID format.
+    /// </summary>
     public static string ComputeHash(string json)
     {
         var bytes = Encoding.UTF8.GetBytes(json);
-        var hash = SHA256.HashData(bytes);
+        var hash  = MD5.HashData(bytes);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

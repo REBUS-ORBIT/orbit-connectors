@@ -238,12 +238,10 @@ public sealed class OrbitMaterialConverter : IDisposable
         if (token is null) return null;
 
         if (token.Type == JTokenType.String)
-        {
-            var s = token.Value<string>() ?? "";
-            if (s.StartsWith(BlobPrefix, StringComparison.Ordinal))
-                return s.Substring(BlobPrefix.Length);
-            return null;
-        }
+            // The value of a texture field is always a blob reference by
+            // construction (this is only called on TextureFieldNames). Accept
+            // a bare server blob id, a legacy "@blob:" prefix, or a full URL.
+            return NormalizeBlobRef(token.Value<string>());
 
         if (token is JObject stub)
         {
@@ -259,9 +257,8 @@ public sealed class OrbitMaterialConverter : IDisposable
                 var inner = resolved["value"] ?? resolved["data"];
                 if (inner is JValue v && v.Type == JTokenType.String)
                 {
-                    var s2 = v.Value<string>() ?? "";
-                    if (s2.StartsWith(BlobPrefix, StringComparison.Ordinal))
-                        return s2.Substring(BlobPrefix.Length);
+                    var norm = NormalizeBlobRef(v.Value<string>());
+                    if (!string.IsNullOrEmpty(norm)) return norm;
                 }
             }
 
@@ -550,7 +547,17 @@ public sealed class OrbitMaterialConverter : IDisposable
             var blobId = TokenBlobId(token);
             if (string.IsNullOrEmpty(blobId)) continue;
 
-            if (!_blobToPath.TryGetValue(blobId!, out var path))
+            var downloaded = _blobToPath.TryGetValue(blobId!, out var path);
+
+            // Per-slot diagnostic: which texture field matched, the resolved
+            // blob id, and whether its bytes were downloaded in the prefetch
+            // phase. Makes the summary `blobs=N downloaded=N` line actionable
+            // when a slot silently fails to reconstruct.
+            RhinoApp.WriteLine(
+                $"[ORBIT] material-slot: slot={slot} field={fieldName} " +
+                $"blobId={blobId} downloaded={downloaded.ToString().ToLowerInvariant()}");
+
+            if (!downloaded)
             {
                 // Field references a blob we couldn't download. Surface
                 // it in the diagnostic so users can correlate with the
@@ -601,18 +608,47 @@ public sealed class OrbitMaterialConverter : IDisposable
     {
         if (token is null) return null;
         if (token.Type == JTokenType.String)
-        {
-            var s = token.Value<string>() ?? "";
-            if (s.StartsWith(BlobPrefix, StringComparison.Ordinal))
-                return s.Substring(BlobPrefix.Length);
-            return null;
-        }
+            // Bare server blob id (current wire format) / legacy "@blob:" / URL.
+            return NormalizeBlobRef(token.Value<string>());
         if (token is JObject stub)
         {
             var refId = stub["referencedId"]?.Value<string>();
             return string.IsNullOrEmpty(refId) ? null : refId;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Normalise a texture-field string value to a server blob id. Only ever
+    /// called on values of <see cref="TextureFieldNames"/>, so any non-empty
+    /// string is a texture reference by construction. Accepts three shapes:
+    /// <list type="bullet">
+    ///   <item><description>a bare server blob id, e.g. <c>feb75f1864</c> — the
+    ///   current send-side + viewer wire format (3DConvert's
+    ///   <c>writer_speckle.py</c> sets <c>rm[field] = blob_id</c>, and the
+    ///   connector's <c>TextureBlobPatcher</c> now strips the <c>@blob:</c>
+    ///   prefix to match);</description></item>
+    ///   <item><description>a legacy <c>@blob:HASH</c> prefixed value (older
+    ///   connector sends);</description></item>
+    ///   <item><description>a full blob URL (<c>…/blob/&lt;id&gt;</c>) — take the
+    ///   last path segment.</description></item>
+    /// </list>
+    /// Returns null for empty input.
+    /// </summary>
+    private static string? NormalizeBlobRef(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        s = s.Trim();
+        if (s.StartsWith(BlobPrefix, StringComparison.Ordinal))
+            s = s.Substring(BlobPrefix.Length);
+        // Tolerate a full blob URL by taking the last path segment.
+        var slash = s.LastIndexOf('/');
+        if (slash >= 0 && slash < s.Length - 1)
+            s = s.Substring(slash + 1);
+        // Drop any querystring suffix some producers append.
+        var q = s.IndexOf('?');
+        if (q >= 0) s = s.Substring(0, q);
+        return string.IsNullOrWhiteSpace(s) ? null : s;
     }
 
     private static long? ReadArgbLong(JToken? token)

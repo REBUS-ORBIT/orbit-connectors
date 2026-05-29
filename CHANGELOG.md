@@ -11,6 +11,92 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.20 — Send/receive textured round-trip (serializer, transport, GraphQL, viewer + Rhino texture mapping)
+
+> Completes the textured-model round-trip that v0.1.17–v0.1.19 began. With
+> v0.1.19 the connector *extracted* embedded/procedural bitmaps, but the
+> send still failed with a generic `400 (Bad Request)`; once that was
+> resolved the ORBIT viewer crashed, then rendered the model without the
+> bitmap, and finally a received model dropped the texture (and, once
+> recovered, mapped it wrong). v0.1.20 fixes every link in that chain so a
+> textured model sends cleanly, renders in the viewer, and receives back
+> into Rhino with the bitmap mapped exactly as authored.
+
+### Send — `400 (Bad Request)` resolved (three independent bugs)
+
+- **Serializer (`vendor/SDK/.../Serialisation/OrbitSerializer.cs`,
+  `Orbit.Objects/Base/OrbitObject.cs`).** Restored Speckle-compatible
+  wire format: 32-char **MD5** object ids (was 64-char SHA-256), `id`
+  injected on every detached object, detach stubs emit
+  `speckle_type: "reference"`, and `@elements` / `OrbitType` /
+  `source_application` are carried on the root collection. The server
+  rejected the old shape outright.
+- **Transport (`vendor/SDK/.../Transport/ServerTransport.cs`).** Object
+  batches are now uploaded as `multipart/form-data` (the Speckle object
+  API rejects `application/json` with *"Unsupported content type"*). The
+  server response body is now logged on a non-2xx so the next failure is
+  diagnosable instead of a bare `.NET` status string.
+- **GraphQL (`vendor/SDK/.../Api/GraphQL/OrbitQueries.cs`,
+  `Api/OrbitClient.cs`, `Api/GraphQL/OrbitGraphQLClient.cs`).** Version
+  creation now calls `versionMutations.create` (was the non-existent
+  `modelMutations.create` shape, which 400'd). The GraphQL client reads
+  and surfaces the response body **before** the success check so server
+  GraphQL errors are visible rather than hidden behind
+  `EnsureSuccessStatusCode`.
+
+### Viewer — material crash + missing bitmap
+
+- **`RenderMaterial.cs` — `DefaultValueHandling.Include`** on `diffuse`,
+  `emissive`, `opacity`, `roughness`, `metalness`. Newtonsoft was dropping
+  zero-valued scalars (e.g. `metalness: 0.0`), and the viewer calls
+  `.toString()` on them unconditionally — `undefined.toString()` crashed
+  `renderMaterialToString` / `getMaterialHash`. Forcing serialization
+  keeps the fields present.
+- **`TextureBlobPatcher.cs` — bare server blob ids.** Texture references
+  now emit the bare server-assigned blob id (e.g. `feb75f1864`) instead of
+  `@blob:<sha256>`; the viewer resolves `${blobBaseUrl}/${blobId}`
+  directly. Also added an explicit recursion branch for
+  `RhinoDataObject.displayValue` meshes (the wrapper inherits `OrbitBase`,
+  not `OrbitObject`, so the generic walk missed it) — without it the
+  textured display meshes never got patched.
+
+### Receive — texture download + correct UV mapping
+
+- **`OrbitMaterialConverter.cs` — `NormalizeBlobRef`.** Receive now
+  recognises a **bare** blob id (still tolerating a legacy `@blob:` prefix
+  or a full blob URL), downloads the blob to a temp bitmap, and assigns it
+  to the correct PBR slot (`emissiveTexture`/`pbrEmissionTexture` →
+  emission, `diffuseTexture`/`baseColorTexture` → base color, etc.).
+  Previously it only matched `@blob:`-prefixed values and so downloaded
+  nothing once send switched to bare ids. Per-slot diagnostics restore a
+  meaningful `blobs=N downloaded=N` summary.
+- **`RhinoReceivePipeline.cs` + `OrbitToRhinoConverter.cs` — display-mesh
+  UV bake for textured native objects.** A textured Brep/Extrusion/SubD
+  wrapped in a `RhinoDataObject` round-trips its native `.3dm` by default,
+  so Rhino auto-generated surface-parameterisation UVs that ignored the
+  authored bitmap mapping (texture appeared but was oriented/scaled
+  wrong). When the material references a texture **and** the display
+  meshes carry `textureCoordinates`, receive now bakes the UV-carrying
+  display mesh (new `OrbitToRhinoConverter.ConvertDisplayMeshOnly`) so the
+  mapping matches the viewer 1:1 (both use lower-left, V-up mesh UVs — no
+  flip needed). Non-textured geometry keeps the byte-for-byte native
+  round-trip.
+
+### Tooling
+
+- **`scripts/dev-build-local.ps1`** is now version-aware: it resolves the
+  version from `Directory.Build.props`, deploys into the matching
+  `…\Programs\OrbitConnector\Rhino\<version>\` folder, mirrors into
+  whichever folder the Rhino registry currently points at, and verifies
+  the deployed `.rhp` matches the build output — so a local dev build can
+  no longer silently land in a stale version folder.
+
+### Trade-off
+
+Textured Brep/Extrusion/SubD objects now bake as a mesh on receive (the
+only geometry carrying the authored UVs); non-textured objects remain
+editable native geometry.
+
 ## v0.1.19 — Embedded / procedural texture extraction (Metal + Physically Based bitmaps)
 
 > Fixes the case where `Metal` and `Physically Based (1)` still shipped

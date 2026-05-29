@@ -17,15 +17,25 @@ public class RenderMaterial : Base.OrbitBase
 
     [JsonProperty("name")]       public string? Name      { get; set; }
 
+    // NOTE: the global serializer uses DefaultValueHandling.Ignore, which would
+    // DROP any of these scalars when they equal the .NET default (0 / 0.0) — e.g.
+    // metalness=0.0 on a non-metal, roughness=0.0 on a perfectly smooth material.
+    // The ORBIT/Speckle viewer's `renderMaterialToString` / `getMaterialHash`
+    // calls `.toString()` on diffuse/emissive/opacity/roughness/metalness
+    // UNCONDITIONALLY; a missing (undefined) field crashes the whole render with
+    // "Cannot read properties of undefined (reading 'toString')". Per-property
+    // DefaultValueHandling.Include forces them to ALWAYS serialise, matching the
+    // known-good Python (3DConvert) wire format.
+
     /// <summary>Diffuse colour as unsigned ARGB packed into a long.</summary>
-    [JsonProperty("diffuse")]    public long    Diffuse   { get; set; } = unchecked((long)0xFF_FF_FF_FF);
+    [JsonProperty("diffuse",   DefaultValueHandling = DefaultValueHandling.Include)] public long    Diffuse   { get; set; } = unchecked((long)0xFF_FF_FF_FF);
 
     /// <summary>Emissive colour as unsigned ARGB packed into a long.</summary>
-    [JsonProperty("emissive")]   public long    Emissive  { get; set; } = unchecked((long)0xFF_00_00_00);
+    [JsonProperty("emissive",  DefaultValueHandling = DefaultValueHandling.Include)] public long    Emissive  { get; set; } = unchecked((long)0xFF_00_00_00);
 
-    [JsonProperty("opacity")]    public double  Opacity   { get; set; } = 1.0;
-    [JsonProperty("roughness")]  public double  Roughness { get; set; } = 0.5;
-    [JsonProperty("metalness")]  public double  Metalness { get; set; } = 0.0;
+    [JsonProperty("opacity",   DefaultValueHandling = DefaultValueHandling.Include)] public double  Opacity   { get; set; } = 1.0;
+    [JsonProperty("roughness", DefaultValueHandling = DefaultValueHandling.Include)] public double  Roughness { get; set; } = 0.5;
+    [JsonProperty("metalness", DefaultValueHandling = DefaultValueHandling.Include)] public double  Metalness { get; set; } = 0.0;
 
     /// <summary>Emissive intensity multiplier (0 = off, 1 = full glow).</summary>
     [JsonProperty("emissiveIntensity")]    public double? EmissiveIntensity   { get; set; }

@@ -201,39 +201,46 @@ if (-not ($artefacts | Where-Object { $_ -like '*OrbitConnector.Rhino.rhp' })) {
           "Check the RenameToRhp target in OrbitConnector.Rhino.csproj."
 }
 
-# ─── 5. Copy to destination(s) ───────────────────────────────────────────────
-$destinations = New-Object System.Collections.Generic.List[string]
-$null = $destinations.Add($primaryDest)
-if ($registryTarget -and ($registryTarget -ne $primaryDest)) {
-    $null = $destinations.Add($registryTarget)
+# ─── 5. Copy to the version folder we just built ─────────────────────────────
+# The plugin always loads from whatever path Rhino's registry FileName points
+# at. We deploy to $primaryDest ($InstallRoot\$Version, e.g. ...\0.1.19) and
+# then (step 6) repoint the registry there. This guarantees that the folder
+# Rhino loads == the version we built. Earlier this script left the registry
+# pinned to a legacy folder (e.g. 0.1.17) while building 0.1.19, so fresh bits
+# never reached the loaded folder if the mirror-copy silently failed.
+if (-not (Test-Path $primaryDest)) {
+    New-Item -ItemType Directory -Path $primaryDest -Force | Out-Null
 }
-
-foreach ($dest in $destinations) {
-    if (-not (Test-Path $dest)) {
-        New-Item -ItemType Directory -Path $dest -Force | Out-Null
-    }
-    foreach ($src in $artefacts) {
-        Copy-Item -LiteralPath $src -Destination $dest -Force
-    }
+foreach ($src in $artefacts) {
+    Copy-Item -LiteralPath $src -Destination $primaryDest -Force
 }
 
 # Embedded assets (UI\wwwroot\*) are bundled into OrbitConnector.Rhino.dll
 # as ManifestResource by the csproj's <EmbeddedResource> globs, so no
 # wwwroot folder needs copying. The same goes for Resources\*.
 
-# ─── 6. Make sure Rhino picks up THIS folder on next launch ──────────────────
-# If we wrote into a folder Rhino's registry doesn't point at, repoint it.
-# Skip on missing registry — Rhino will register on first plugin load.
-if ($registryTarget -and ($registryTarget -ne $primaryDest)) {
-    # Already mirrored to $registryTarget above; leave registry alone.
-} elseif (-not $registryTarget) {
-    $newRhp = Join-Path $primaryDest 'OrbitConnector.Rhino.rhp'
-    try {
-        if (-not (Test-Path $regKey)) { New-Item -Path $regKey -Force | Out-Null }
-        Set-ItemProperty -Path $regKey -Name FileName -Value $newRhp -Type String -Force
-    } catch {
-        Write-Warning "Could not update Rhino plugin registry entry: $_"
+# ─── 6. Point Rhino's registry at the folder we just deployed ────────────────
+# ALWAYS repoint — never trust a stale registry value from an older version.
+$newRhp = Join-Path $primaryDest 'OrbitConnector.Rhino.rhp'
+try {
+    if (-not (Test-Path $regKey)) { New-Item -Path $regKey -Force | Out-Null }
+    Set-ItemProperty -Path $regKey -Name FileName -Value $newRhp -Type String -Force
+} catch {
+    Write-Warning "Could not update Rhino plugin registry entry: $_"
+}
+
+# ─── 6b. Verify the deployed artefacts match the freshly built ones ──────────
+$srcRhp = Join-Path $outDir 'OrbitConnector.Rhino.rhp'
+$dstRhp = Join-Path $primaryDest 'OrbitConnector.Rhino.rhp'
+if ((Test-Path $srcRhp) -and (Test-Path $dstRhp)) {
+    $s = Get-Item $srcRhp
+    $d = Get-Item $dstRhp
+    if ($s.Length -ne $d.Length -or $d.LastWriteTime -lt $s.LastWriteTime) {
+        throw "Deploy verification FAILED: $dstRhp (len=$($d.Length), " +
+              "$($d.LastWriteTime)) does not match freshly built $srcRhp " +
+              "(len=$($s.Length), $($s.LastWriteTime)). The loaded plugin would be stale."
     }
+    Write-Host "verified: $dstRhp matches build output (len=$($d.Length), $($d.LastWriteTime))" -ForegroundColor DarkGray
 }
 
 # ─── 7. Restart Rhino ────────────────────────────────────────────────────────
@@ -242,6 +249,5 @@ if (-not $NoRestart) {
 }
 
 # ─── 8. One-line summary ─────────────────────────────────────────────────────
-$summaryDest = if ($registryTarget) { $registryTarget } else { $primaryDest }
 $rhinoTag = if ($NoRestart) { 'Rhino NOT restarted (-NoRestart)' } else { 'Rhino restarting' }
-Write-Host "dev build copied to $summaryDest; $rhinoTag" -ForegroundColor Green
+Write-Host "dev build v$Version copied to $primaryDest (registry repointed here); $rhinoTag" -ForegroundColor Green
