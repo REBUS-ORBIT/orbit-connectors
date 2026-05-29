@@ -11,6 +11,151 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.18 — Texture-probe regression fix: Metal bitmap, union-of-strategies, recursive RDK walk
+
+> Fixes a v0.1.17 regression where some Rhino materials (notably the
+> stock "Metal" PBR material in our test model) shipped with
+> `textures-attached=[]` even though their bitmap was on disk and
+> reachable. v0.1.17 actually pulled **fewer** textures than v0.1.16
+> on real-world models because of an over-tight Strategy 4 gate and
+> a flat RDK walk that missed bitmaps wrapped in non-texture
+> render-content containers.
+
+### Symptom
+
+With v0.1.17 installed against a Rhino model whose `Metal` material
+has a bitmap attached through the render-content tree (not through
+the PBR slot editor), the receive log reported:
+
+```
+[ORBIT] material: id=ad1c4971b507c677a8226c21af67a43c name='Metal'
+        textures=[] baseColor=FF007F00 metallic=1.00 roughness=0.80
+        -> rhinoIdx=0
+```
+
+Same model under v0.1.16 also showed `textures=[]` for `Metal`, but
+several **other** materials that DID work in v0.1.16 stopped working
+in v0.1.17 — the v0.1.17 commit that was supposed to fix texture
+extraction made the overall coverage worse.
+
+### Root cause
+
+Three independent producer-side issues in
+`Converters/RhinoMaterialHelper.cs`:
+
+1. **Strategy 4 (SimulatedMaterial fallback) over-gated.** v0.1.17
+   gated the simulated-material bake on
+   `slotsAttached.Count == 0`. Any earlier strategy successfully
+   attaching a single non-basecolor slot (e.g. roughness) blocked
+   the bake entirely. v0.1.16's gate was the more permissive
+   `!slotsAttached.Contains("basecolor")`. Materials that exposed
+   roughness/metallic via PBR but kept their basecolor bitmap
+   inside an RDK wrapper lost their basecolor in v0.1.17.
+2. **RDK walk was flat.** v0.1.17 only matched `child is RenderTexture`
+   among the immediate children of `Material.RenderMaterial`. Bitmaps
+   attached through the Render → Materials editor are routinely
+   nested inside non-texture wrapper render-content nodes (Color
+   Adjustment, Mix, Multiply, Texture Mapping containers) which
+   are themselves `RenderContent` but not `RenderTexture`. The
+   flat walk skipped past them and never reached the leaf bitmap.
+3. **No diagnostic logging on probe misses.** When a strategy
+   inspected a slot but failed to resolve a path, v0.1.17 logged
+   nothing. There was no way to tell from the Rhino command window
+   whether a missing texture was caused by a probe bug, a missing
+   on-disk file, an embedded-only bitmap, or a Rhino API throwing
+   on a corner case. Every `textures-attached=[]` looked the same.
+
+The Metal-specific symptom in our test model is consistent with
+issue #2: the stock "Metal" PBR material exposes its bitmap through
+an RDK Adjustment wrapper, so neither
+`PhysicallyBased.GetTexture(PBR_BaseColor)` nor the flat RDK walk
+saw it; the simulated-material bake would have caught it but issue
+#1 prevented it from running once Strategy 1 attached the
+roughness/metallic scalars.
+
+### Fix
+
+All in `src/OrbitConnector.Rhino/Converters/RhinoMaterialHelper.cs`.
+
+- **Union of strategies.** All four strategies (`PhysicallyBased.GetTexture`,
+  `Material.GetTextures`, RDK walk, `SimulatedMaterial`) now run
+  unconditionally on every material. `AttachSlot` stays idempotent
+  per slot — first success wins, later strategies log
+  `skip(already-attached)` for that slot. A new
+  per-`(slot, normalised-path)` dedupe set stops us hashing the same
+  JPEG four times in a row when multiple strategies surface the
+  same file.
+- **Recursive RDK walk.** New `CollectRenderTextures` helper
+  descends the render-content graph rooted at
+  `Material.RenderMaterial` to a bounded depth (8), collecting
+  every `RenderTexture` descendant regardless of whether it's a
+  direct child or nested inside a wrapper container. Slot name
+  preference is the texture's own `ChildSlotName`, then any
+  parent container's slot name, then the texture's display
+  `Name`. Unattributed bitmaps default to `basecolor` (the same
+  default the v0.1.16/v0.1.17 `ClassifySlot` used).
+- **Per-probe diagnostic notes.** Every strategy now emits crumbs
+  into a `probes=[…]` field on the material summary line. The
+  notes record what each strategy did: how many slots it saw
+  (`pbr:probed=4 with-file=2`), why an inspected slot was
+  skipped (`native:basecolor=tex-no-path`,
+  `rdk:emission=path-missing`, `sim:throw`), and which strategies
+  ran at all (`pbr:skip(not-physically-based)`,
+  `rdk:skip(no-RenderMaterial)`). When a material reports
+  `textures-attached=[]`, the `probes=[…]` string is now an
+  exhaustive root-cause description, not a silent fail.
+- **Last-resort `RenderTexture.Filename` fallback.** If
+  `SimulatedTexture(Allow)` returns null for a leaf bitmap (rare
+  but observed on some Rhino 8 service-pack builds), the RDK
+  walker now reflects on the texture's `Filename` property and
+  uses it directly when present.
+
+### Validation
+
+After re-sending the same test model with v0.1.18 installed
+locally, the `Metal` material is expected to log either:
+
+- `textures-attached=[basecolor(rdk,…B)]` — bitmap found via the
+  recursive RDK walk (the Metal-specific fix), OR
+- `textures-attached=[basecolor(sim.bitmap,…B)]` — bitmap baked
+  out via `SimulatedMaterial.ToMaterial(Allow)` once Strategy 4
+  is no longer over-gated (the regression fix).
+
+Either way the receive side renders the bitmap on Metal-painted
+surfaces instead of solid green-blue (`baseColor=FF007F00`).
+
+For materials with no bitmap at all, the summary now reads e.g.:
+
+```
+[ORBIT] send-material: name='Plain Plaster' textures-attached=[]
+        reason=no-bitmaps-found
+        probes=[pbr:probed=0 with-file=0;native:total=0 mapped=0 with-file=0;rdk:textures=0 with-file=0;sim:probed=0 with-file=0]
+```
+
+so the user can tell at a glance the material genuinely has no
+on-disk bitmaps versus a probe error.
+
+### What is not changed
+
+- The receive pipeline. v0.1.16 / v0.1.17 receive code already
+  handles every texture field this fix may now emit.
+- The blob upload + patch step. `RhinoSendPipeline` and
+  `OrbitBlobUploader` are bit-identical.
+- Slot classification (`ClassifySlot`) and Rhino-type-to-slot
+  mapping (`MapTextureTypeToSlot`). The same classifications are
+  used; only the upstream collection is now exhaustive.
+- The vendored SDK. No SDK changes.
+- Inno installer / YAK manifest / GitHub Actions workflows. The
+  CI release pipeline picks this section up by tag automatically.
+
+### Local dev loop (new)
+
+This release also ships a local-only build-and-reload script —
+`scripts/dev-build-local.ps1` — for iterating on connector
+changes without going through the CI installer. See
+[`HOTPATCH.md`](HOTPATCH.md) for usage. The CI workflow is
+unchanged.
+
 ## v0.1.17 — Send PBR textures end-to-end (producer-side bitmap → blob upload)
 
 > ⚠ **Re-send required.** Any model uploaded with `v0.1.16` or earlier
