@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using Rhino;
 using Rhino.DocObjects;
@@ -16,73 +17,86 @@ namespace OrbitConnector.Rhino.Converters;
 /// placeholder to the server-assigned short blob id.
 ///
 /// <para>
-/// <b>v0.1.18 changes (vs v0.1.17).</b> Strategies no longer short-circuit;
-/// every probe runs unconditionally on every material and the union of
-/// (slot, on-disk-path) pairs is fed into <c>AttachSlot</c>. First success
-/// per slot wins. Identical paths probed by multiple strategies are
-/// deduplicated. The RDK walk now recurses into non-texture wrapper nodes
-/// (e.g. "Color Adjustment", "Multiply", "Texture Mapping") to find
-/// nested <see cref="RenderTexture"/> children — these wrappers were
-/// invisible to the v0.1.17 flat <c>FirstChild / NextSibling</c> walk
-/// and they hold the bitmap on materials authored through the Render
-/// → Materials editor. Diagnostic logging per probe is mandatory: every
-/// strategy logs whether it ran, what slots it inspected, and why
-/// each inspected slot did or did not yield a usable path.
+/// <b>v0.1.19 changes (vs v0.1.18).</b> The v0.1.18 probe only accepted a
+/// texture that resolved to an <i>on-disk file</i> via
+/// <see cref="Texture.FileReference"/>.<c>FullPath</c> or the legacy
+/// <see cref="Texture.FileName"/>. That silently dropped two whole classes
+/// of texture that the known-good 3DConvert / RebusWorkstationAgent
+/// IronPython pipeline (<c>3DConvert/app/converters/rhino_conv.py</c>) does
+/// capture:
 /// </para>
-///
-/// <para>Strategies (all run unconditionally):</para>
 ///
 /// <list type="number">
 ///   <item><description>
-///     <b>PhysicallyBased.GetTexture(PBR_*)</b> — Rhino's first-class
-///     PBR API. Handles base colour, emission, roughness, metallic,
-///     opacity, and bump slots on any material the user authored
-///     through the PBR editor.
+///     <b>Render-content bitmaps whose path lives in the RDK parameter
+///     bag.</b> Rhino's render-content textures frequently expose their
+///     file via <c>RenderContent.GetParameter("filename")</c> rather than a
+///     typed <c>Texture.FileName</c>. v0.1.19 reads that parameter.
 ///   </description></item>
 ///   <item><description>
-///     <b>Material.GetTextures()</b> — enumerates every native texture
-///     slot Rhino has on the material (PBR + legacy Bitmap / Bump /
-///     Transparency / Emap). Catches the corner case where
-///     <c>IsPhysicallyBased</c> is false but the material still has a
-///     bitmap attached via the legacy slots.
-///   </description></item>
-///   <item><description>
-///     <b>RDK render-content tree walk (recursive)</b> — descends the
-///     render-content graph rooted at <see cref="Material.RenderMaterial"/>,
-///     collecting every <see cref="RenderTexture"/> at any depth and
-///     resolving it through <see cref="RenderTexture.SimulatedTexture"/>.
-///     Captures procedural textures and bitmaps wrapped inside
-///     non-texture render-content nodes (Color Adjustment, Mix, etc.)
-///     that v0.1.17's flat walk missed.
-///   </description></item>
-///   <item><description>
-///     <b>SimulatedMaterial fallback</b> —
-///     <see cref="RenderMaterial.ToMaterial"/> with
-///     <c>TextureGeneration.Allow</c> renders the material out to a
-///     plain <see cref="Material"/> with baked-in textures, so we still
-///     ship a base-colour bitmap for fully procedural materials. We
-///     enumerate both PBR slots and <see cref="Material.GetTextures"/>
-///     on the simulated material; final last-ditch is the legacy
-///     <see cref="TextureType.Bitmap"/> probe.
+///     <b>Embedded / procedural textures with no external file.</b> Stock
+///     Rhino PBR materials (e.g. the "Metal" preset) and any texture
+///     embedded in the <c>.3dm</c> have no on-disk path at all —
+///     <c>FileReference.FullPath</c> and <c>FileName</c> are both blank.
+///     The only way to get uploadable bytes is to ask Rhino to bake the
+///     texture to a temp bitmap with
+///     <see cref="RenderTexture.SimulatedTexture"/>(<see cref="RenderTexture.TextureGeneration.Allow"/>);
+///     the returned <c>SimulatedTexture.Filename</c> points at a generated
+///     temp file. v0.1.19 does this for every render-texture node it finds.
 ///   </description></item>
 /// </list>
 ///
 /// <para>
-/// For every probed slot the helper resolves a real on-disk file via
-/// <see cref="Texture.FileReference"/> (Rhino 8.0+) with a fall-back
-/// to the legacy <see cref="Texture.FileName"/> property. The file
-/// bytes are hashed (SHA-256) and the digest is used as the placeholder
-/// id. Identical bitmaps shared across materials de-duplicate at the
-/// hash level; the uploader only POSTs each unique file once.
+/// v0.1.19 also adds an explicit <see cref="RenderContent.FindChild"/>
+/// pass over the documented PBR child-slot names
+/// (<c>pbr-base-color</c>, <c>pbr-metallic</c>, …) because a PBR material's
+/// base-color bitmap is reachable through that slot even when
+/// <c>PhysicallyBased.GetTexture(PBR_BaseColor)</c> returns a typed
+/// <see cref="Texture"/> with an unresolvable (embedded) path and the flat
+/// <c>FirstChild</c> walk does not surface it.
 /// </para>
 ///
+/// <para>Strategies (all run unconditionally; first success per slot wins):</para>
+///
+/// <list type="number">
+///   <item><description><b>1.</b> <c>PhysicallyBased.GetTexture(PBR_*)</c> → on-disk path.</description></item>
+///   <item><description><b>1b.</b> <c>RenderMaterial.FindChild("pbr-*")</c> → render-texture file (parameter-bag path, then bake).</description></item>
+///   <item><description><b>2.</b> <c>Material.GetTextures()</c> → on-disk path.</description></item>
+///   <item><description><b>3.</b> Recursive RDK render-content walk → render-texture file (parameter-bag path, then bake).</description></item>
+///   <item><description><b>4.</b> <c>RenderMaterial.ToMaterial(Allow)</c> simulated-material probe → on-disk path.</description></item>
+/// </list>
+///
 /// <para>
-/// Emissive policy is unchanged from v0.1.17 — see the inline comments
-/// near the rescue / promotion blocks.
+/// Every render-texture file resolution goes through
+/// <see cref="ResolveRenderTextureFile"/>, which tries (in order) the
+/// reflective <c>Filename</c> property, <c>GetParameter("filename")</c>,
+/// and finally the <see cref="RenderTexture.SimulatedTexture"/> bake. The
+/// <c>probes=[…]</c> field on the per-material summary line records, per
+/// strategy and slot, whether a node was found, whether an on-disk file
+/// existed, and whether a temp bitmap had to be baked — so the next send
+/// log is fully self-diagnosing.
 /// </para>
 /// </summary>
 internal static class RhinoMaterialHelper
 {
+    /// <summary>
+    /// Documented Rhino 8 PBR child-slot names mapped to the canonical ORBIT
+    /// slot bucket. These match
+    /// <c>Rhino.Render.RenderMaterial.PhysicallyBased.ChildSlotNames</c> and
+    /// the <c>_RDK_PBR_SLOTS</c> table in the 3DConvert reference pipeline.
+    /// </summary>
+    private static readonly (string slotName, string slot)[] PbrChildSlots =
+    {
+        ("pbr-base-color",        "basecolor"),
+        ("pbr-metallic",          "metallic"),
+        ("pbr-roughness",         "roughness"),
+        ("pbr-emission",          "emission"),
+        ("pbr-bump",              "bump"),
+        ("pbr-alpha",             "opacity"),
+        ("pbr-opacity",           "opacity"),
+        ("pbr-ambient-occlusion", "ao"),
+    };
+
     /// <summary>
     /// Probes <paramref name="rhinoObj"/>'s effective render material for
     /// bitmap textures, attaches <c>@blob:SHA256</c> placeholders to
@@ -114,17 +128,10 @@ internal static class RhinoMaterialHelper
         var emissivePromoted = false;
 
         // ─── AttachSlot ───────────────────────────────────────────────────
-        // Idempotent per (slot). De-dupes (slot, normalised-path) attempts
-        // across strategies so we only hash a given file once even when
-        // multiple probes return the same path. First success per slot
-        // wins; later strategies log a "skipped (already attached)" note.
         void AttachSlot(string slot, string path, string source)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
 
-            // Per-(slot,path) dedupe across strategies. Without this we'd
-            // hash the same JPEG four times in a row when PBR / GetTextures
-            // / RDK / SimulatedMaterial all surface the same file.
             var dedupeKey = slot + "\0" + Path.GetFullPath(path).ToLowerInvariant();
             if (!attemptedKeys.Add(dedupeKey)) return;
 
@@ -165,12 +172,6 @@ internal static class RhinoMaterialHelper
             switch (slot)
             {
                 case "basecolor":
-                    // When a base-colour texture is attached, set Diffuse to
-                    // opaque white so the viewer's `color × map` multiplication
-                    // renders the texture's actual colours. Leaving Diffuse at
-                    // the material's solid-colour value would tint the texture
-                    // (e.g. an orange material with a wood texture would render
-                    // wood-tinted-orange instead of wood).
                     rm.BaseColorTexture = blobRef;
                     rm.DiffuseTexture   = blobRef;
                     rm.Diffuse          = unchecked((long)0xFF_FF_FF_FFu);
@@ -188,9 +189,6 @@ internal static class RhinoMaterialHelper
                     rm.MetalnessTexture = blobRef;
                     break;
                 case "metallicroughness":
-                    // glTF-style packed metallic-roughness texture. Aliased onto
-                    // both Rhino slots so the receive pipeline picks it up
-                    // regardless of which one its TryApply probes first.
                     rm.RoughnessTexture = blobRef;
                     rm.MetalnessTexture = blobRef;
                     rm["metallicRoughnessTexture"] = blobRef;
@@ -214,9 +212,57 @@ internal static class RhinoMaterialHelper
                 $"hash={hashHex.Substring(0, 16)}…");
         }
 
-        var renderMat = mat.RenderMaterial;
+        // Probe a render-content child (typically from FindChild or a tree
+        // walk) for a known slot. Bakes embedded/procedural maps to temp.
+        void ProbeContentForSlot(RenderContent? content, string slot, string source)
+        {
+            if (content == null) return;
+            if (slotsAttached.Contains(slot)) return;
 
-        // ── Strategy 1: PhysicallyBased.GetTexture (matches Python pipeline) ──
+            if (content is RenderTexture rt)
+            {
+                var path = ResolveRenderTextureFile(rt, probeNotes, $"{source}:{slot}");
+                if (path != null) AttachSlot(slot, path, source);
+                else probeNotes.Add($"{source}:{slot}=node-no-bitmap");
+                return;
+            }
+
+            // Wrapper content (Mix / Adjustment / Mapping …) — recurse for any
+            // texture descendant and attribute it to this slot.
+            var sink = new List<(string slotName, RenderTexture rt)>();
+            CollectRenderTextures(content, slot, 0, sink);
+            foreach (var (_, crt) in sink)
+            {
+                if (slotsAttached.Contains(slot)) break;
+                var path = ResolveRenderTextureFile(crt, probeNotes, $"{source}:{slot}");
+                if (path != null) { AttachSlot(slot, path, source); break; }
+            }
+        }
+
+        // Resolve the RDK render-content for this material. Prefer the
+        // material's own RenderMaterial; fall back to a doc.RenderMaterials
+        // lookup by instance id (matches the 3DConvert reference).
+        RenderMaterial? renderMat = null;
+        try { renderMat = mat.RenderMaterial; } catch { /* may throw */ }
+        if (renderMat is null)
+        {
+            try
+            {
+                var rmid = mat.RenderMaterialInstanceId;
+                if (rmid != Guid.Empty)
+                {
+                    foreach (var cand in doc.RenderMaterials)
+                    {
+                        try { if (cand.Id == rmid) { renderMat = cand; break; } }
+                        catch { /* skip */ }
+                    }
+                }
+            }
+            catch { /* RenderMaterials table unavailable */ }
+        }
+        probeNotes.Add(renderMat is null ? "renderMat=null" : "renderMat=ok");
+
+        // ── Strategy 1: PhysicallyBased.GetTexture (on-disk path) ────────────
         if (mat.IsPhysicallyBased && mat.PhysicallyBased is not null)
         {
             var pbr = mat.PhysicallyBased;
@@ -228,14 +274,10 @@ internal static class RhinoMaterialHelper
                 (TextureType.PBR_Metallic,  "metallic"),
                 (TextureType.Bump,          "bump"),
             };
-            // PBR_Alpha is the Rhino 8 PBR-opacity slot. It was added partway
-            // through the 8.x line; older builds expose alpha only via the
-            // legacy Transparency slot. Resolve at runtime so the code
-            // compiles against the lowest-common Rhino 8 SDK surface.
             if (Enum.TryParse<TextureType>("PBR_Alpha", out var pbrAlpha))
                 pbrMap.Add((pbrAlpha, "opacity"));
 
-            int seen = 0, withFile = 0;
+            int seen = 0, withFile = 0, embedded = 0;
             foreach (var (texType, slot) in pbrMap)
             {
                 try
@@ -246,7 +288,11 @@ internal static class RhinoMaterialHelper
                     var path = ResolveTexturePath(tex);
                     if (path == null)
                     {
-                        probeNotes.Add($"pbr:{slot}=tex-no-path");
+                        // Texture node exists but has no resolvable on-disk
+                        // file (embedded / authoring path missing). Strategy
+                        // 1b will recover it via the RDK child slot + bake.
+                        embedded++;
+                        probeNotes.Add($"pbr:{slot}=tex-no-path(embedded?)");
                         continue;
                     }
                     withFile++;
@@ -260,11 +306,30 @@ internal static class RhinoMaterialHelper
                     probeNotes.Add($"pbr:{slot}=throw");
                 }
             }
-            probeNotes.Add($"pbr:probed={seen} with-file={withFile}");
+            probeNotes.Add($"pbr:probed={seen} with-file={withFile} embedded={embedded}");
         }
         else
         {
             probeNotes.Add("pbr:skip(not-physically-based)");
+        }
+
+        // ── Strategy 1b: FindChild over documented PBR child slots ───────────
+        // Recovers the embedded / parameter-bag bitmap that Strategy 1 saw as
+        // a path-less Texture, plus any slot Strategy 1 didn't cover.
+        if (renderMat is not null)
+        {
+            int found = 0;
+            foreach (var (slotName, slot) in PbrChildSlots)
+            {
+                if (slotsAttached.Contains(slot)) continue;
+                RenderContent? child = null;
+                try { child = renderMat.FindChild(slotName); }
+                catch (Exception ex) { probeNotes.Add($"findchild:{slot}=throw({ex.GetType().Name})"); }
+                if (child == null) continue;
+                found++;
+                ProbeContentForSlot(child, slot, "findchild");
+            }
+            probeNotes.Add($"findchild:children={found}");
         }
 
         // ── Strategy 2: Material.GetTextures() — every native texture slot ──
@@ -309,12 +374,7 @@ internal static class RhinoMaterialHelper
             probeNotes.Add("native:throw");
         }
 
-        // ── Strategy 3: RDK render-content tree walk (recursive) ─────────────
-        // v0.1.17 used a flat FirstChild / NextSibling walk. That misses any
-        // RenderTexture wrapped inside non-texture render-content nodes
-        // (Color Adjustment, Mix, Multiply, Texture Mapping containers, …)
-        // which is how the Render → Materials editor often nests bitmaps.
-        // Recurse the full tree and collect every RenderTexture descendant.
+        // ── Strategy 3: recursive RDK render-content tree walk ───────────────
         if (renderMat is not null)
         {
             try
@@ -325,42 +385,11 @@ internal static class RhinoMaterialHelper
                 foreach (var (slotName, rt) in found)
                 {
                     var slot = ClassifySlot(slotName);
-                    string? path = null;
-                    try
+                    if (slotsAttached.Contains(slot)) continue;
+                    var path = ResolveRenderTextureFile(rt, probeNotes, $"rdk:{slot}");
+                    if (path == null)
                     {
-                        var simTex = rt.SimulatedTexture(
-                            RenderTexture.TextureGeneration.Allow);
-                        path = simTex?.Filename;
-                    }
-                    catch (Exception ex)
-                    {
-                        probeNotes.Add($"rdk:{slot}=sim-throw({ex.GetType().Name})");
-                    }
-
-                    if (string.IsNullOrEmpty(path))
-                    {
-                        // Fallback: ask the texture itself for an on-disk
-                        // file. RenderTexture exposes a Filename property
-                        // for bitmap-typed children even when SimulatedTexture
-                        // returns null (rare but observed on some Rhino 8
-                        // service-pack builds).
-                        try
-                        {
-                            path = rt.GetType()
-                                     .GetProperty("Filename")?
-                                     .GetValue(rt) as string;
-                        }
-                        catch { /* property may not exist */ }
-                    }
-
-                    if (string.IsNullOrEmpty(path))
-                    {
-                        probeNotes.Add($"rdk:{slot}=no-path");
-                        continue;
-                    }
-                    if (!File.Exists(path))
-                    {
-                        probeNotes.Add($"rdk:{slot}=path-missing");
+                        probeNotes.Add($"rdk:{slot}=node-no-bitmap");
                         continue;
                     }
                     withFile++;
@@ -381,23 +410,16 @@ internal static class RhinoMaterialHelper
             probeNotes.Add("rdk:skip(no-RenderMaterial)");
         }
 
-        // ── Strategy 4: SimulatedMaterial fallback (always runs in v0.1.18) ──
-        // v0.1.17 only ran this when no other strategy attached anything. We
-        // now run it unconditionally so a material that had only roughness /
-        // metallic textures attached by earlier strategies can still pick up
-        // a basecolor via the simulated bake. AttachSlot's idempotency stops
-        // it overwriting a higher-priority match.
+        // ── Strategy 4: SimulatedMaterial bake → probe its textures ──────────
         if (renderMat is not null)
         {
             try
             {
-                var simMat = renderMat.ToMaterial(
-                    RenderTexture.TextureGeneration.Allow);
+                var simMat = renderMat.ToMaterial(RenderTexture.TextureGeneration.Allow);
                 if (simMat is not null)
                 {
                     int seen = 0, withFile = 0;
 
-                    // 4a. PBR slots on the simulated material.
                     if (simMat.IsPhysicallyBased && simMat.PhysicallyBased is not null)
                     {
                         var simPbr = simMat.PhysicallyBased;
@@ -425,7 +447,6 @@ internal static class RhinoMaterialHelper
                         }
                     }
 
-                    // 4b. GetTextures() enumeration on the simulated material.
                     try
                     {
                         var simNatives = simMat.GetTextures();
@@ -446,7 +467,6 @@ internal static class RhinoMaterialHelper
                     }
                     catch { /* skip native enumeration */ }
 
-                    // 4c. Last-resort legacy Bitmap probe.
                     try
                     {
                         var tex = simMat.GetTexture(TextureType.Bitmap);
@@ -480,11 +500,6 @@ internal static class RhinoMaterialHelper
         }
 
         // ── Texture-slot rescue: emission → basecolor (no real glow) ─────────
-        // Rhino's slot classifier sometimes drops the only bitmap into the
-        // emission bucket even when the material isn't meant to glow (e.g. a
-        // base-colour-bitmap PBR material the user authored through the PBR
-        // editor). If the Rhino material's emission colour is black, the user
-        // never intended emission — promote to basecolor instead.
         var emissionIsRealGlow = mat.EmissionColor.R != 0
                               || mat.EmissionColor.G != 0
                               || mat.EmissionColor.B != 0;
@@ -507,11 +522,6 @@ internal static class RhinoMaterialHelper
         }
 
         // ── Emissive promotion (mirrors writer_speckle.py / viewer v2.4.3) ───
-        // The viewer multiplies the emission colour by the emission texture.
-        // If the user attaches an emission map but Rhino reports emissive=0
-        // (the common case for materials where the bitmap *is* the glow),
-        // the multiplication yields zero and the texture never renders.
-        // Promote to opaque white + intensity 1.0 so the texture is visible.
         if (slotsAttached.Contains("emission"))
         {
             const long opaqueBlack = unchecked((long)0xFF_00_00_00u);
@@ -553,14 +563,68 @@ internal static class RhinoMaterialHelper
     }
 
     /// <summary>
+    /// Resolve an on-disk file for a render-texture node, baking embedded /
+    /// procedural maps to a temp bitmap when no external file exists. Tries,
+    /// in order:
+    /// <list type="number">
+    ///   <item><description>the reflective <c>Filename</c> property
+    ///     (bitmap textures);</description></item>
+    ///   <item><description><c>GetParameter("filename")</c> — where many
+    ///     render-content bitmaps store their path;</description></item>
+    ///   <item><description><see cref="RenderTexture.SimulatedTexture"/> with
+    ///     <see cref="RenderTexture.TextureGeneration.Allow"/>, which writes
+    ///     procedural / embedded textures out to a temp file and returns its
+    ///     path via <c>SimulatedTexture.Filename</c>.</description></item>
+    /// </list>
+    /// Returns <c>null</c> if no uploadable file could be produced.
+    /// </summary>
+    private static string? ResolveRenderTextureFile(
+        RenderTexture rt, List<string> probeNotes, string tag)
+    {
+        if (rt == null) return null;
+
+        // 1. Reflective Filename property (RenderTexture / BitmapTexture).
+        try
+        {
+            var fn = rt.GetType().GetProperty("Filename")?.GetValue(rt) as string;
+            if (!string.IsNullOrWhiteSpace(fn) && File.Exists(fn)) return fn;
+        }
+        catch { /* property may not exist or throw */ }
+
+        // 2. RDK parameter bag — render-content bitmaps store the path here.
+        try
+        {
+            var p = rt.GetParameter("filename");
+            var ps = p?.ToString();
+            if (!string.IsNullOrWhiteSpace(ps) && File.Exists(ps)) return ps;
+        }
+        catch { /* GetParameter unsupported on this content type */ }
+
+        // 3. Bake to a temp bitmap (procedural / embedded textures). This is
+        //    the ONLY path that yields bytes when there is no external file.
+        try
+        {
+            var sim = rt.SimulatedTexture(RenderTexture.TextureGeneration.Allow);
+            var sf = sim?.Filename;
+            if (!string.IsNullOrWhiteSpace(sf) && File.Exists(sf))
+            {
+                probeNotes.Add($"{tag}=baked-temp");
+                return sf;
+            }
+        }
+        catch (Exception ex)
+        {
+            probeNotes.Add($"{tag}=bake-throw({ex.GetType().Name})");
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Recursively walks the render-content graph rooted at
     /// <paramref name="parent"/>, appending every <see cref="RenderTexture"/>
     /// descendant to <paramref name="sink"/> together with the slot name to
-    /// classify it under. The slot name preference order is the texture's
-    /// own <see cref="RenderContent.ChildSlotName"/>, then any parent
-    /// container's <c>ChildSlotName</c>, then the <see cref="RenderContent.Name"/>
-    /// of the texture as a last-ditch hint. Depth is bounded to stop
-    /// pathological cyclic graphs.
+    /// classify it under.
     /// </summary>
     private static void CollectRenderTextures(
         RenderContent parent,
@@ -574,8 +638,6 @@ internal static class RhinoMaterialHelper
         var child = parent.FirstChild;
         while (child is not null)
         {
-            // Prefer the child's own slot name; fall back to the parent's
-            // slot when the child is a wrapper that doesn't carry one.
             string? childSlot = null;
             try { childSlot = child.ChildSlotName; }
             catch { /* some custom render-contents throw on access */ }
@@ -586,10 +648,6 @@ internal static class RhinoMaterialHelper
 
             if (child is RenderTexture rt)
             {
-                // If still no slot hint, fall back to the texture's display
-                // name. ClassifySlot falls back to "basecolor" for completely
-                // empty hints which is the safest default for an unattributed
-                // bitmap on a single-texture material.
                 if (string.IsNullOrWhiteSpace(slotForChild))
                 {
                     try { slotForChild = rt.Name; } catch { /* ignore */ }
@@ -597,9 +655,6 @@ internal static class RhinoMaterialHelper
                 sink.Add((slotForChild ?? string.Empty, rt));
             }
 
-            // Recurse — this is the v0.1.18 enhancement over the v0.1.17 walk.
-            // Wrapper render-contents (Mix / Adjustment / Mapping / etc.) are
-            // not RenderTexture themselves, but their descendants might be.
             CollectRenderTextures(child, slotForChild, depth + 1, sink);
 
             child = child.NextSibling;
@@ -644,17 +699,9 @@ internal static class RhinoMaterialHelper
     /// </summary>
     private static string? MapTextureTypeToSlot(TextureType type)
     {
-        // PBR_Alpha doesn't compile against the lowest-common Rhino 8 SDK
-        // surface; check by name for forward-compatibility.
         var name = type.ToString();
         if (name == "PBR_Alpha") return "opacity";
 
-        // Note: in Rhino 8, TextureType.Bitmap and TextureType.PBR_BaseColor
-        // share the same underlying enum value (and similarly Emap may share
-        // PBR_Emission). The compiler rejects duplicate case labels — list
-        // each distinct value only once. The "Bitmap" name path is reached
-        // because Rhino reports legacy slots via the PBR_BaseColor enum on
-        // modern builds, so the mapping is still correct.
         return type switch
         {
             TextureType.PBR_BaseColor => "basecolor",
@@ -668,9 +715,8 @@ internal static class RhinoMaterialHelper
     }
 
     /// <summary>
-    /// Classify a render-content child slot name (from
-    /// <see cref="RenderTexture.ChildSlotName"/> or any parent container's
-    /// equivalent) into the canonical ORBIT slot bucket used by <c>AttachSlot</c>.
+    /// Classify a render-content child slot name into the canonical ORBIT
+    /// slot bucket used by <c>AttachSlot</c>.
     /// </summary>
     private static string ClassifySlot(string? slotName)
     {

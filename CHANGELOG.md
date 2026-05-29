@@ -11,6 +11,86 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.19 — Embedded / procedural texture extraction (Metal + Physically Based bitmaps)
+
+> Fixes the case where `Metal` and `Physically Based (1)` still shipped
+> `textures-attached=[]` under v0.1.18 despite a fresh send. Root cause:
+> the v0.1.18 probe only accepted a texture that resolved to an **on-disk
+> file**. Stock Rhino PBR materials and bitmaps embedded in the `.3dm`
+> have no external file, so every strategy reported `tex-no-path` and the
+> texture was dropped before upload.
+
+### Symptom
+
+With v0.1.18 loaded (confirmed via `[ORBIT] plugin v0.1.18 loaded.`),
+a fresh send of the test model still produced a receive log with
+`Metal` and `Physically Based (1)` at `textures=[]`, `blobs=0`. The
+send-side `probes=[…]` field (added v0.1.18) showed the texture nodes
+WERE found — they just resolved to no on-disk path.
+
+### Root cause
+
+v0.1.18 resolved texture files exclusively through
+`Texture.FileReference.FullPath` and the legacy `Texture.FileName`.
+Two whole classes of texture have neither:
+
+1. **Render-content bitmaps whose path lives in the RDK parameter bag.**
+   Rhino render-content textures expose their file via
+   `RenderContent.GetParameter("filename")`, not a typed
+   `Texture.FileName`. v0.1.18 never read that parameter.
+2. **Embedded / procedural textures with no external file at all.**
+   The stock `Metal` PBR preset and any bitmap embedded in the `.3dm`
+   report blank `FileReference`/`FileName`. The only way to get bytes is
+   to bake the texture to a temp bitmap via
+   `RenderTexture.SimulatedTexture(TextureGeneration.Allow)` and read the
+   generated `SimulatedTexture.Filename`. v0.1.18 called
+   `SimulatedTexture(Allow)` only inside the flat/recursive child walk —
+   and crucially the base-color bitmap of a PBR material is reachable
+   through the `pbr-base-color` child slot via `FindChild`, which
+   v0.1.18 never queried, so the walk never reached it to bake it.
+
+This matches the known-good 3DConvert / RebusWorkstationAgent IronPython
+pipeline (`3DConvert/app/converters/rhino_conv.py`), which reads
+`content.GetParameter('filename')`, walks the documented `_RDK_PBR_SLOTS`
+via `FindChild`, and falls back to `SimulatedMaterial(Allow)`.
+
+### Fix
+
+All in `src/OrbitConnector.Rhino/Converters/RhinoMaterialHelper.cs`.
+
+- **New `ResolveRenderTextureFile` helper.** Every render-texture node now
+  resolves its file through: (1) the reflective `Filename` property,
+  (2) `RenderContent.GetParameter("filename")`, (3) a
+  `SimulatedTexture(TextureGeneration.Allow)` bake to a temp bitmap. Step
+  3 is the only path that yields uploadable bytes for embedded /
+  procedural textures. Logged as `…=baked-temp` in `probes=[…]`.
+- **New Strategy 1b: `FindChild` over the documented PBR child slots**
+  (`pbr-base-color`, `pbr-metallic`, `pbr-roughness`, `pbr-emission`,
+  `pbr-bump`, `pbr-alpha`, `pbr-opacity`, `pbr-ambient-occlusion`). For
+  each child it runs `ResolveRenderTextureFile` (so an embedded PBR
+  base-color bitmap that Strategy 1 saw as a path-less `Texture` is now
+  recovered + baked). Wrapper children (Mix / Adjustment) recurse.
+- **Strategy 3 (recursive RDK walk) now bakes.** Each found
+  `RenderTexture` resolves through `ResolveRenderTextureFile` instead of
+  the on-disk-only path, so procedural / embedded children produce a temp
+  bitmap.
+- **RDK material lookup hardened.** When `Material.RenderMaterial` is null,
+  fall back to a `doc.RenderMaterials` lookup by
+  `Material.RenderMaterialInstanceId` (matches the reference pipeline).
+- **`probes=[…]` enriched.** Per strategy/slot it now reports node-found,
+  on-disk-file, embedded (`tex-no-path(embedded?)`), and bake result
+  (`baked-temp` / `node-no-bitmap` / `bake-throw`). The next send log is
+  fully self-diagnosing.
+
+Bumps `OrbitConnectorVersion` 0.1.18 → 0.1.19; the `[ORBIT] plugin
+v0.1.19 loaded.` banner reflects it automatically.
+
+### What is not changed
+
+- Receive pipeline, blob upload, blob patcher, vendored SDK — unchanged.
+- Slot classification and Rhino-type-to-slot mapping — unchanged; only
+  the upstream file resolution is now embedded/procedural-aware.
+
 ## v0.1.18 — Texture-probe regression fix: Metal bitmap, union-of-strategies, recursive RDK walk
 
 > Fixes a v0.1.17 regression where some Rhino materials (notably the
