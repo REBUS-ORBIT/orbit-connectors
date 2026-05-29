@@ -50,6 +50,18 @@ public static class TextureBlobPatcher
                     PatchObject(child, map);
         }
 
+        // Recurse into RhinoDataObject display meshes. Brep / Extrusion / SubD
+        // sends are wrapped in a RhinoDataObject (speckle_type
+        // "Objects.Data.DataObject:Objects.Data.RhinoObject"), and the textured
+        // renderMaterial lives on each mesh in its DisplayValue list — NOT on the
+        // wrapper itself. RhinoDataObject derives from OrbitBase (not OrbitObject),
+        // so without this branch the walker never descends into the meshes and the
+        // "@blob:<localSHA256>" placeholders are never rewritten to the server blob
+        // id, leaving the viewer with an unresolvable texture reference.
+        if (obj is Orbit.Objects.Data.RhinoDataObject dataObj && dataObj.DisplayValue != null)
+            foreach (var child in dataObj.DisplayValue)
+                PatchObject(child, map);
+
         // Recurse into typed mesh render materials
         if (obj is Orbit.Objects.Geometry.Mesh mesh && mesh.RenderMaterial != null)
             PatchRenderMaterial(mesh.RenderMaterial, map);
@@ -86,8 +98,13 @@ public static class TextureBlobPatcher
             return value;
 
         var hash = value[BlobPrefix.Length..];
+        // Emit the BARE server blob id (no "@blob:" prefix). The ORBIT/Speckle
+        // viewer hydrates texture URLs as `${blobBaseUrl}/${encodeURIComponent(value)}`
+        // and expects a bare hash (see TEXTURE_VIEWER_FIX.md §4.1 and the Python
+        // 3DConvert writer, which sets `rm[field] = blob_id`). Leaving the prefix
+        // produces a "%40blob%3A…"-mangled URL that 404s.
         return map.TryGetValue(hash, out var serverId)
-            ? BlobPrefix + serverId
+            ? serverId
             : value;
     }
 
@@ -102,7 +119,7 @@ public static class TextureBlobPatcher
             {
                 var hash = s[BlobPrefix.Length..];
                 if (map.TryGetValue(hash, out var serverId))
-                    return BlobPrefix + serverId;
+                    return serverId;   // bare blob id — see PatchBlobRef note
             }
             return token;
         }

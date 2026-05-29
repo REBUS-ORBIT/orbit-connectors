@@ -303,6 +303,20 @@ public class OrbitToRhinoConverter
         }
     }
 
+    /// <summary>
+    /// Bake the object's <c>displayValue</c> meshes (UVs included) and ignore
+    /// any native <c>.3dm</c> payload. Used by the receive pipeline for
+    /// <em>textured</em> native objects (Brep / Extrusion / SubD wrapped in a
+    /// <c>RhinoDataObject</c>): the native surface round-trips perfectly but
+    /// Rhino auto-generates surface-parameterisation UVs that DO NOT match the
+    /// authored bitmap mapping. The display meshes carry the exact
+    /// <c>textureCoordinates</c> the ORBIT viewer renders with, so baking them
+    /// reproduces the viewer's mapping in Rhino. Returns null when there is no
+    /// usable display mesh (caller then falls back to the native path).
+    /// </summary>
+    public Mesh? ConvertDisplayMeshOnly(JObject obj)
+        => MergeDisplayValueMeshes(obj) as Mesh;
+
     private GeometryBase? MergeDisplayValueMeshes(JObject obj)
     {
         var items = EnumerateDisplayValueItems(obj).ToList();

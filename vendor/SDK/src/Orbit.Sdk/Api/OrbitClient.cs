@@ -64,6 +64,6 @@ public class OrbitClient
         int totalChildrenCount = 0,
         CancellationToken ct = default) =>
         _gql.MutateAsync<OrbitVersion>(OrbitQueries.CreateVersion,
-            "modelMutations.create", ct,
+            "versionMutations.create", ct,
             new { input = new { projectId, modelId, objectId, message, sourceApplication, totalChildrenCount } });
 }

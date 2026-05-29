@@ -273,7 +273,12 @@ public class OrbitConnectorPlugin : PlugIn
             RhinoDoc.EndSaveDocument     += OnDocumentSave;
             Log("doc events wired");
 
-            RhinoApp.WriteLine($"ORBIT Connector v{Version} loaded.");
+            // Grep-able load banner. Uses the same `[ORBIT]` prefix as every
+            // send/receive diagnostic so a user filtering the command line on
+            // `[ORBIT]` instantly sees WHICH build is live. If a re-test shows
+            // no `[ORBIT] plugin v0.1.18 loaded` line, Rhino is still running
+            // an older in-memory assembly — close Rhino fully and relaunch.
+            RhinoApp.WriteLine($"[ORBIT] plugin v{Version} loaded.");
             Log("OnLoad ok");
             return LoadReturnCode.Success;
         }

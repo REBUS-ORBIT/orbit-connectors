@@ -693,7 +693,41 @@ public class RhinoReceivePipeline
         if (TryResolveDetachedArray(geoObj, "displayValue", state.Objects, out var dvResolvedLeaf))
             geoObj = dvResolvedLeaf;
 
-        var geometry = state.Converter.Convert(geoObj);
+        // Resolve the render material up-front (inline -> @-prefixed ->
+        // displayValue[0]) so we can decide HOW to bake textured native
+        // geometry below. ResolveMaterialJObject is a pure read.
+        var (rmJObj, matSource) = ResolveMaterialJObject(geoObj, state.Objects);
+
+        // TEXTURE-MAPPING FIX (v0.1.19): a textured native object (Brep /
+        // Extrusion / SubD wrapped in a RhinoDataObject) round-trips its
+        // `.3dm` payload by default. Rhino then auto-generates
+        // surface-parameterisation UVs for the render mesh, which DO NOT match
+        // the authored bitmap mapping the ORBIT viewer renders with — the
+        // texture shows up but is oriented/scaled wrong. The display meshes
+        // carry the exact `textureCoordinates` the viewer used, so when the
+        // material references a texture AND we have display-mesh UVs, bake the
+        // UV-carrying display mesh instead of the native surface. This makes
+        // Rhino reproduce the viewer's mapping 1:1 (both use lower-left,
+        // V-up mesh UVs, so no flip/transform is needed). Non-textured
+        // geometry keeps the byte-for-byte native round-trip.
+        global::Rhino.Geometry.GeometryBase? geometry;
+        bool preferDisplayMesh = rmJObj is not null
+            && MaterialHasTexture(rmJObj)
+            && HasDisplayMeshUVs(geoObj);
+        if (preferDisplayMesh)
+        {
+            geometry = state.Converter.ConvertDisplayMeshOnly(geoObj);
+            if (geometry != null)
+                RhinoApp.WriteLine(
+                    $"[ORBIT] tex-map: id={orbitId} baked display-mesh (with UVs) " +
+                    "instead of native surface so the bitmap maps like the viewer");
+            else
+                geometry = state.Converter.Convert(geoObj); // display mesh unusable -> native
+        }
+        else
+        {
+            geometry = state.Converter.Convert(geoObj);
+        }
         if (geometry == null)
         {
             state.SkippedCount++;
@@ -757,7 +791,8 @@ public class RhinoReceivePipeline
         // native geometry. ResolveMaterialJObject handles the lookup
         // (inline -> @-prefixed -> displayValue[0]).
         int? matIdx = null;
-        var (rmJObj, matSource) = ResolveMaterialJObject(geoObj, state.Objects);
+        // rmJObj / matSource were resolved up-front (see the texture-mapping
+        // bake decision above) so the geometry path could react to textures.
         var matOrbitId = rmJObj?["id"]?.Value<string>()
                       ?? rmJObj?["applicationId"]?.Value<string>();
 
@@ -835,6 +870,65 @@ public class RhinoReceivePipeline
             state.Warnings.Add(msg);
             RhinoApp.WriteLine($"[ORBIT] bake skip: {msg}");
         }
+    }
+
+    /// <summary>
+    /// Texture-reference fields a <c>RenderMaterial</c> may carry. Mirrors the
+    /// slots recognised by <c>OrbitMaterialConverter</c>; used only to decide
+    /// whether a textured leaf should be baked from its UV-carrying display
+    /// mesh (see the texture-mapping fix in <see cref="BakeLeaf"/>).
+    /// </summary>
+    private static readonly string[] MaterialTextureFields =
+    {
+        "diffuseTexture", "baseColorTexture",
+        "emissiveTexture", "pbrEmissionTexture",
+        "metallicRoughnessTexture", "roughnessTexture",
+        "metalnessTexture", "metallicTexture",
+        "normalTexture", "bumpTexture", "opacityTexture",
+    };
+
+    /// <summary>
+    /// True when the material references at least one texture (a non-empty
+    /// blob string, or a stub object). Accepts both bare and <c>@</c>-prefixed
+    /// field names.
+    /// </summary>
+    private static bool MaterialHasTexture(JObject rm)
+    {
+        foreach (var field in MaterialTextureFields)
+        {
+            var t = rm[field] ?? rm["@" + field];
+            if (t == null) continue;
+            if (t.Type == JTokenType.String && !string.IsNullOrWhiteSpace(t.Value<string>()))
+                return true;
+            if (t.Type == JTokenType.Object) // detached / nested texture reference
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// True when the object exposes at least one <c>displayValue</c> mesh that
+    /// carries a non-empty <c>textureCoordinates</c> array (inline). These are
+    /// the authored UVs the viewer renders with; if present we prefer them over
+    /// Rhino's auto-generated surface UVs for textured native geometry.
+    /// </summary>
+    private static bool HasDisplayMeshUVs(JObject geoObj)
+    {
+        var dv = geoObj["displayValue"] ?? geoObj["@displayValue"];
+        IEnumerable<JToken> items = dv switch
+        {
+            JArray arr   => arr,
+            JObject one  => new[] { (JToken)one },
+            _            => Array.Empty<JToken>(),
+        };
+        foreach (var item in items)
+        {
+            if (item is not JObject mesh) continue;
+            var uv = mesh["textureCoordinates"] ?? mesh["@textureCoordinates"];
+            if (uv is JArray ua && ua.Count > 0)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>

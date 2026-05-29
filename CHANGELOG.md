@@ -11,6 +11,317 @@ The release CI (`.github/workflows/release.yml`) extracts the section
 matching the pushed tag (e.g. `## v0.1.1`) and uses it as the GitHub
 Release body, so the format of each entry below matters.
 
+## v0.1.20 — Send/receive textured round-trip (serializer, transport, GraphQL, viewer + Rhino texture mapping)
+
+> Completes the textured-model round-trip that v0.1.17–v0.1.19 began. With
+> v0.1.19 the connector *extracted* embedded/procedural bitmaps, but the
+> send still failed with a generic `400 (Bad Request)`; once that was
+> resolved the ORBIT viewer crashed, then rendered the model without the
+> bitmap, and finally a received model dropped the texture (and, once
+> recovered, mapped it wrong). v0.1.20 fixes every link in that chain so a
+> textured model sends cleanly, renders in the viewer, and receives back
+> into Rhino with the bitmap mapped exactly as authored.
+
+### Send — `400 (Bad Request)` resolved (three independent bugs)
+
+- **Serializer (`vendor/SDK/.../Serialisation/OrbitSerializer.cs`,
+  `Orbit.Objects/Base/OrbitObject.cs`).** Restored Speckle-compatible
+  wire format: 32-char **MD5** object ids (was 64-char SHA-256), `id`
+  injected on every detached object, detach stubs emit
+  `speckle_type: "reference"`, and `@elements` / `OrbitType` /
+  `source_application` are carried on the root collection. The server
+  rejected the old shape outright.
+- **Transport (`vendor/SDK/.../Transport/ServerTransport.cs`).** Object
+  batches are now uploaded as `multipart/form-data` (the Speckle object
+  API rejects `application/json` with *"Unsupported content type"*). The
+  server response body is now logged on a non-2xx so the next failure is
+  diagnosable instead of a bare `.NET` status string.
+- **GraphQL (`vendor/SDK/.../Api/GraphQL/OrbitQueries.cs`,
+  `Api/OrbitClient.cs`, `Api/GraphQL/OrbitGraphQLClient.cs`).** Version
+  creation now calls `versionMutations.create` (was the non-existent
+  `modelMutations.create` shape, which 400'd). The GraphQL client reads
+  and surfaces the response body **before** the success check so server
+  GraphQL errors are visible rather than hidden behind
+  `EnsureSuccessStatusCode`.
+
+### Viewer — material crash + missing bitmap
+
+- **`RenderMaterial.cs` — `DefaultValueHandling.Include`** on `diffuse`,
+  `emissive`, `opacity`, `roughness`, `metalness`. Newtonsoft was dropping
+  zero-valued scalars (e.g. `metalness: 0.0`), and the viewer calls
+  `.toString()` on them unconditionally — `undefined.toString()` crashed
+  `renderMaterialToString` / `getMaterialHash`. Forcing serialization
+  keeps the fields present.
+- **`TextureBlobPatcher.cs` — bare server blob ids.** Texture references
+  now emit the bare server-assigned blob id (e.g. `feb75f1864`) instead of
+  `@blob:<sha256>`; the viewer resolves `${blobBaseUrl}/${blobId}`
+  directly. Also added an explicit recursion branch for
+  `RhinoDataObject.displayValue` meshes (the wrapper inherits `OrbitBase`,
+  not `OrbitObject`, so the generic walk missed it) — without it the
+  textured display meshes never got patched.
+
+### Receive — texture download + correct UV mapping
+
+- **`OrbitMaterialConverter.cs` — `NormalizeBlobRef`.** Receive now
+  recognises a **bare** blob id (still tolerating a legacy `@blob:` prefix
+  or a full blob URL), downloads the blob to a temp bitmap, and assigns it
+  to the correct PBR slot (`emissiveTexture`/`pbrEmissionTexture` →
+  emission, `diffuseTexture`/`baseColorTexture` → base color, etc.).
+  Previously it only matched `@blob:`-prefixed values and so downloaded
+  nothing once send switched to bare ids. Per-slot diagnostics restore a
+  meaningful `blobs=N downloaded=N` summary.
+- **`RhinoReceivePipeline.cs` + `OrbitToRhinoConverter.cs` — display-mesh
+  UV bake for textured native objects.** A textured Brep/Extrusion/SubD
+  wrapped in a `RhinoDataObject` round-trips its native `.3dm` by default,
+  so Rhino auto-generated surface-parameterisation UVs that ignored the
+  authored bitmap mapping (texture appeared but was oriented/scaled
+  wrong). When the material references a texture **and** the display
+  meshes carry `textureCoordinates`, receive now bakes the UV-carrying
+  display mesh (new `OrbitToRhinoConverter.ConvertDisplayMeshOnly`) so the
+  mapping matches the viewer 1:1 (both use lower-left, V-up mesh UVs — no
+  flip needed). Non-textured geometry keeps the byte-for-byte native
+  round-trip.
+
+### Tooling
+
+- **`scripts/dev-build-local.ps1`** is now version-aware: it resolves the
+  version from `Directory.Build.props`, deploys into the matching
+  `…\Programs\OrbitConnector\Rhino\<version>\` folder, mirrors into
+  whichever folder the Rhino registry currently points at, and verifies
+  the deployed `.rhp` matches the build output — so a local dev build can
+  no longer silently land in a stale version folder.
+
+### Trade-off
+
+Textured Brep/Extrusion/SubD objects now bake as a mesh on receive (the
+only geometry carrying the authored UVs); non-textured objects remain
+editable native geometry.
+
+## v0.1.19 — Embedded / procedural texture extraction (Metal + Physically Based bitmaps)
+
+> Fixes the case where `Metal` and `Physically Based (1)` still shipped
+> `textures-attached=[]` under v0.1.18 despite a fresh send. Root cause:
+> the v0.1.18 probe only accepted a texture that resolved to an **on-disk
+> file**. Stock Rhino PBR materials and bitmaps embedded in the `.3dm`
+> have no external file, so every strategy reported `tex-no-path` and the
+> texture was dropped before upload.
+
+### Symptom
+
+With v0.1.18 loaded (confirmed via `[ORBIT] plugin v0.1.18 loaded.`),
+a fresh send of the test model still produced a receive log with
+`Metal` and `Physically Based (1)` at `textures=[]`, `blobs=0`. The
+send-side `probes=[…]` field (added v0.1.18) showed the texture nodes
+WERE found — they just resolved to no on-disk path.
+
+### Root cause
+
+v0.1.18 resolved texture files exclusively through
+`Texture.FileReference.FullPath` and the legacy `Texture.FileName`.
+Two whole classes of texture have neither:
+
+1. **Render-content bitmaps whose path lives in the RDK parameter bag.**
+   Rhino render-content textures expose their file via
+   `RenderContent.GetParameter("filename")`, not a typed
+   `Texture.FileName`. v0.1.18 never read that parameter.
+2. **Embedded / procedural textures with no external file at all.**
+   The stock `Metal` PBR preset and any bitmap embedded in the `.3dm`
+   report blank `FileReference`/`FileName`. The only way to get bytes is
+   to bake the texture to a temp bitmap via
+   `RenderTexture.SimulatedTexture(TextureGeneration.Allow)` and read the
+   generated `SimulatedTexture.Filename`. v0.1.18 called
+   `SimulatedTexture(Allow)` only inside the flat/recursive child walk —
+   and crucially the base-color bitmap of a PBR material is reachable
+   through the `pbr-base-color` child slot via `FindChild`, which
+   v0.1.18 never queried, so the walk never reached it to bake it.
+
+This matches the known-good 3DConvert / RebusWorkstationAgent IronPython
+pipeline (`3DConvert/app/converters/rhino_conv.py`), which reads
+`content.GetParameter('filename')`, walks the documented `_RDK_PBR_SLOTS`
+via `FindChild`, and falls back to `SimulatedMaterial(Allow)`.
+
+### Fix
+
+All in `src/OrbitConnector.Rhino/Converters/RhinoMaterialHelper.cs`.
+
+- **New `ResolveRenderTextureFile` helper.** Every render-texture node now
+  resolves its file through: (1) the reflective `Filename` property,
+  (2) `RenderContent.GetParameter("filename")`, (3) a
+  `SimulatedTexture(TextureGeneration.Allow)` bake to a temp bitmap. Step
+  3 is the only path that yields uploadable bytes for embedded /
+  procedural textures. Logged as `…=baked-temp` in `probes=[…]`.
+- **New Strategy 1b: `FindChild` over the documented PBR child slots**
+  (`pbr-base-color`, `pbr-metallic`, `pbr-roughness`, `pbr-emission`,
+  `pbr-bump`, `pbr-alpha`, `pbr-opacity`, `pbr-ambient-occlusion`). For
+  each child it runs `ResolveRenderTextureFile` (so an embedded PBR
+  base-color bitmap that Strategy 1 saw as a path-less `Texture` is now
+  recovered + baked). Wrapper children (Mix / Adjustment) recurse.
+- **Strategy 3 (recursive RDK walk) now bakes.** Each found
+  `RenderTexture` resolves through `ResolveRenderTextureFile` instead of
+  the on-disk-only path, so procedural / embedded children produce a temp
+  bitmap.
+- **RDK material lookup hardened.** When `Material.RenderMaterial` is null,
+  fall back to a `doc.RenderMaterials` lookup by
+  `Material.RenderMaterialInstanceId` (matches the reference pipeline).
+- **`probes=[…]` enriched.** Per strategy/slot it now reports node-found,
+  on-disk-file, embedded (`tex-no-path(embedded?)`), and bake result
+  (`baked-temp` / `node-no-bitmap` / `bake-throw`). The next send log is
+  fully self-diagnosing.
+
+Bumps `OrbitConnectorVersion` 0.1.18 → 0.1.19; the `[ORBIT] plugin
+v0.1.19 loaded.` banner reflects it automatically.
+
+### What is not changed
+
+- Receive pipeline, blob upload, blob patcher, vendored SDK — unchanged.
+- Slot classification and Rhino-type-to-slot mapping — unchanged; only
+  the upstream file resolution is now embedded/procedural-aware.
+
+## v0.1.18 — Texture-probe regression fix: Metal bitmap, union-of-strategies, recursive RDK walk
+
+> Fixes a v0.1.17 regression where some Rhino materials (notably the
+> stock "Metal" PBR material in our test model) shipped with
+> `textures-attached=[]` even though their bitmap was on disk and
+> reachable. v0.1.17 actually pulled **fewer** textures than v0.1.16
+> on real-world models because of an over-tight Strategy 4 gate and
+> a flat RDK walk that missed bitmaps wrapped in non-texture
+> render-content containers.
+
+### Symptom
+
+With v0.1.17 installed against a Rhino model whose `Metal` material
+has a bitmap attached through the render-content tree (not through
+the PBR slot editor), the receive log reported:
+
+```
+[ORBIT] material: id=ad1c4971b507c677a8226c21af67a43c name='Metal'
+        textures=[] baseColor=FF007F00 metallic=1.00 roughness=0.80
+        -> rhinoIdx=0
+```
+
+Same model under v0.1.16 also showed `textures=[]` for `Metal`, but
+several **other** materials that DID work in v0.1.16 stopped working
+in v0.1.17 — the v0.1.17 commit that was supposed to fix texture
+extraction made the overall coverage worse.
+
+### Root cause
+
+Three independent producer-side issues in
+`Converters/RhinoMaterialHelper.cs`:
+
+1. **Strategy 4 (SimulatedMaterial fallback) over-gated.** v0.1.17
+   gated the simulated-material bake on
+   `slotsAttached.Count == 0`. Any earlier strategy successfully
+   attaching a single non-basecolor slot (e.g. roughness) blocked
+   the bake entirely. v0.1.16's gate was the more permissive
+   `!slotsAttached.Contains("basecolor")`. Materials that exposed
+   roughness/metallic via PBR but kept their basecolor bitmap
+   inside an RDK wrapper lost their basecolor in v0.1.17.
+2. **RDK walk was flat.** v0.1.17 only matched `child is RenderTexture`
+   among the immediate children of `Material.RenderMaterial`. Bitmaps
+   attached through the Render → Materials editor are routinely
+   nested inside non-texture wrapper render-content nodes (Color
+   Adjustment, Mix, Multiply, Texture Mapping containers) which
+   are themselves `RenderContent` but not `RenderTexture`. The
+   flat walk skipped past them and never reached the leaf bitmap.
+3. **No diagnostic logging on probe misses.** When a strategy
+   inspected a slot but failed to resolve a path, v0.1.17 logged
+   nothing. There was no way to tell from the Rhino command window
+   whether a missing texture was caused by a probe bug, a missing
+   on-disk file, an embedded-only bitmap, or a Rhino API throwing
+   on a corner case. Every `textures-attached=[]` looked the same.
+
+The Metal-specific symptom in our test model is consistent with
+issue #2: the stock "Metal" PBR material exposes its bitmap through
+an RDK Adjustment wrapper, so neither
+`PhysicallyBased.GetTexture(PBR_BaseColor)` nor the flat RDK walk
+saw it; the simulated-material bake would have caught it but issue
+#1 prevented it from running once Strategy 1 attached the
+roughness/metallic scalars.
+
+### Fix
+
+All in `src/OrbitConnector.Rhino/Converters/RhinoMaterialHelper.cs`.
+
+- **Union of strategies.** All four strategies (`PhysicallyBased.GetTexture`,
+  `Material.GetTextures`, RDK walk, `SimulatedMaterial`) now run
+  unconditionally on every material. `AttachSlot` stays idempotent
+  per slot — first success wins, later strategies log
+  `skip(already-attached)` for that slot. A new
+  per-`(slot, normalised-path)` dedupe set stops us hashing the same
+  JPEG four times in a row when multiple strategies surface the
+  same file.
+- **Recursive RDK walk.** New `CollectRenderTextures` helper
+  descends the render-content graph rooted at
+  `Material.RenderMaterial` to a bounded depth (8), collecting
+  every `RenderTexture` descendant regardless of whether it's a
+  direct child or nested inside a wrapper container. Slot name
+  preference is the texture's own `ChildSlotName`, then any
+  parent container's slot name, then the texture's display
+  `Name`. Unattributed bitmaps default to `basecolor` (the same
+  default the v0.1.16/v0.1.17 `ClassifySlot` used).
+- **Per-probe diagnostic notes.** Every strategy now emits crumbs
+  into a `probes=[…]` field on the material summary line. The
+  notes record what each strategy did: how many slots it saw
+  (`pbr:probed=4 with-file=2`), why an inspected slot was
+  skipped (`native:basecolor=tex-no-path`,
+  `rdk:emission=path-missing`, `sim:throw`), and which strategies
+  ran at all (`pbr:skip(not-physically-based)`,
+  `rdk:skip(no-RenderMaterial)`). When a material reports
+  `textures-attached=[]`, the `probes=[…]` string is now an
+  exhaustive root-cause description, not a silent fail.
+- **Last-resort `RenderTexture.Filename` fallback.** If
+  `SimulatedTexture(Allow)` returns null for a leaf bitmap (rare
+  but observed on some Rhino 8 service-pack builds), the RDK
+  walker now reflects on the texture's `Filename` property and
+  uses it directly when present.
+
+### Validation
+
+After re-sending the same test model with v0.1.18 installed
+locally, the `Metal` material is expected to log either:
+
+- `textures-attached=[basecolor(rdk,…B)]` — bitmap found via the
+  recursive RDK walk (the Metal-specific fix), OR
+- `textures-attached=[basecolor(sim.bitmap,…B)]` — bitmap baked
+  out via `SimulatedMaterial.ToMaterial(Allow)` once Strategy 4
+  is no longer over-gated (the regression fix).
+
+Either way the receive side renders the bitmap on Metal-painted
+surfaces instead of solid green-blue (`baseColor=FF007F00`).
+
+For materials with no bitmap at all, the summary now reads e.g.:
+
+```
+[ORBIT] send-material: name='Plain Plaster' textures-attached=[]
+        reason=no-bitmaps-found
+        probes=[pbr:probed=0 with-file=0;native:total=0 mapped=0 with-file=0;rdk:textures=0 with-file=0;sim:probed=0 with-file=0]
+```
+
+so the user can tell at a glance the material genuinely has no
+on-disk bitmaps versus a probe error.
+
+### What is not changed
+
+- The receive pipeline. v0.1.16 / v0.1.17 receive code already
+  handles every texture field this fix may now emit.
+- The blob upload + patch step. `RhinoSendPipeline` and
+  `OrbitBlobUploader` are bit-identical.
+- Slot classification (`ClassifySlot`) and Rhino-type-to-slot
+  mapping (`MapTextureTypeToSlot`). The same classifications are
+  used; only the upstream collection is now exhaustive.
+- The vendored SDK. No SDK changes.
+- Inno installer / YAK manifest / GitHub Actions workflows. The
+  CI release pipeline picks this section up by tag automatically.
+
+### Local dev loop (new)
+
+This release also ships a local-only build-and-reload script —
+`scripts/dev-build-local.ps1` — for iterating on connector
+changes without going through the CI installer. See
+[`HOTPATCH.md`](HOTPATCH.md) for usage. The CI workflow is
+unchanged.
+
 ## v0.1.17 — Send PBR textures end-to-end (producer-side bitmap → blob upload)
 
 > ⚠ **Re-send required.** Any model uploaded with `v0.1.16` or earlier

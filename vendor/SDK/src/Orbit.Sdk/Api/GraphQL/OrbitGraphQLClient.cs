@@ -52,9 +52,19 @@ public class OrbitGraphQLClient
         var body = JsonConvert.SerializeObject(new { query, variables });
         var content = new StringContent(body, Encoding.UTF8, "application/json");
         var response = await _http.PostAsync(_graphqlUrl, content, ct);
-        response.EnsureSuccessStatusCode();
 
+        // Read the body BEFORE checking the status code. GraphQL validation
+        // failures come back as HTTP 400 with a JSON body whose `errors[]`
+        // carry the real reason (e.g. "Cannot query field X on type Y").
+        // Calling EnsureSuccessStatusCode() first would discard that and throw
+        // the opaque ".NET" 400 message.
         var json = await response.Content.ReadAsStringAsync(ct);
+
+        if (!response.IsSuccessStatusCode)
+            throw new OrbitApiException(
+                $"GraphQL request failed ({(int)response.StatusCode} {response.StatusCode}): " +
+                ExtractGraphQlErrors(json));
+
         var result = JObject.Parse(json);
 
         if (result["errors"] is JArray errors && errors.Count > 0)
@@ -62,6 +72,31 @@ public class OrbitGraphQLClient
 
         return result["data"] as JObject
             ?? throw new OrbitApiException("GraphQL response missing 'data'");
+    }
+
+    /// <summary>
+    /// Pulls human-readable messages out of a GraphQL error response body,
+    /// falling back to the raw body when it isn't the expected JSON shape.
+    /// </summary>
+    private static string ExtractGraphQlErrors(string body)
+    {
+        try
+        {
+            var obj = JObject.Parse(body);
+            if (obj["errors"] is JArray errs && errs.Count > 0)
+            {
+                var msgs = errs
+                    .Select(e => e["message"]?.Value<string>() ?? e.ToString())
+                    .Where(m => !string.IsNullOrWhiteSpace(m));
+                var joined = string.Join("; ", msgs);
+                if (!string.IsNullOrWhiteSpace(joined)) return joined;
+            }
+        }
+        catch
+        {
+            // Body wasn't JSON — return it raw (trimmed) below.
+        }
+        return string.IsNullOrWhiteSpace(body) ? "(empty response body)" : body.Trim();
     }
 
     private static T? Navigate<T>(JObject data, string path)
